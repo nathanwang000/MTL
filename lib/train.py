@@ -57,9 +57,11 @@ class Train(object):
 
         self.save_filename = save_filename
         if best_save_filename is None:
-            split = self.save_filename.split('.')
+            base = self.save_filename.split('/')
+            split = base[-1].split('.')
             split[0] = split[0] + '_best'
-            self.best_save_filename = ".".join(split)
+            base[-1] = ".".join(split)
+            self.best_save_filename = "/".join(base)
 
         # logging terms
         self.clear_logs()
