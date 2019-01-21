@@ -5,128 +5,145 @@ import torch.nn.functional as F
 import numpy as np
 import warnings
 
-MODELS = {}
+class SharedBottom(nn.Module):
 
-class CNN(nn.Module):
-    def __init__(self):
-        super(CNN, self).__init__()
+    def __init__(self, l=4):
+        '''
+        l: number of layers
+        '''
+        super(SharedBottom, self).__init__()
+        self.l = l
 
-        self.features = nn.Sequential( # input 11x94x50
-            nn.Conv2d(11, 32, kernel_size=3), # 92x48
-            nn.MaxPool2d(kernel_size=2), # 46x24
-            nn.ReLU(inplace=True),            
-            nn.Conv2d(32, 32, kernel_size=3), # 44x22
-            nn.MaxPool2d(kernel_size=2), # 22x11
+        if l == 0: # keep output 16
+            a = 16
+        elif l == 1: # keep parameter comparable
+            a = int(np.round((14672 - 16) / 116)) 
+        elif l == 2: # keep output 16 and parameters comparable
+            a = int(np.round((14672 - 16 - 16*8*2) / 116))
+        else: # keep output 16 and parameters comparable
+            a = int(np.round((-116 + np.sqrt(116**2 + 4*(l-2)*
+                                             (14672 - 16 - 16*8*2)))
+                             / (2*(l-2))))
+
+        print('per layer neuron: {}'.format(a))
+        base = [nn.Linear(100, a), nn.ReLU(inplace=True)]
+        for _ in range(l-1):
+            base.extend([nn.Linear(a, a), nn.ReLU(inplace=True)])
+        self.bottom = nn.Sequential(*base)    
+
+        self.top1 = nn.Sequential(
+            nn.Linear(a, 8),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, kernel_size=3), # 20x9
-            nn.MaxPool2d(kernel_size=2), # 10x4
-            nn.ReLU(inplace=True)
+            nn.Linear(8, 1)
         )
-
-        self.flatten = nn.Sequential(
-            nn.Linear(32 * 10 * 4, 400),
+        self.top2 = nn.Sequential(
+            nn.Linear(a, 8),
             nn.ReLU(inplace=True),
-            nn.Linear(400, 1)
+            nn.Linear(8, 1)
         )
         
     def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.shape[0], -1)
-        x = self.flatten(x)
-        return x
-
-class MLP(nn.Module):
-
-    def __init__(self, neuron_sizes, activation=nn.LeakyReLU, bias=True): 
-        super(MLP, self).__init__()
-        self.neuron_sizes = neuron_sizes
-        
-        layers = []
-        for s0, s1 in zip(neuron_sizes[:-1], neuron_sizes[1:]):
-            layers.extend([
-                nn.Linear(s0, s1, bias=bias),
-                activation()
-            ])
-        
-        self.classifier = nn.Sequential(*layers[:-1])
-
-    def forward(self, x):
-        x = x.view(-1, self.neuron_sizes[0])
-        return self.classifier(x)
-
-
-class LSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, dropout, use_gpu = False, output_dim = 1):
-        super(LSTM, self).__init__()
-        
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.output_dim = output_dim
-        self.lstm = nn.LSTM(input_size = int(input_size), hidden_size = int(hidden_size), num_layers = int(num_layers), dropout = float(dropout), batch_first = True)
-        self.use_gpu = use_gpu 
-
-        #Deal with Pytorch initialization for LSTMs being flawed
-        for name,param in self.lstm.named_parameters():
-            if 'weight' in name: 
-                init.kaiming_uniform(param)
-        
-        #TODO: Layer Norm?
-        
-        self.fc1 = nn.Linear(hidden_size, 50)
-        self.fc2 = nn.Linear(50, 1)
-        self.relu = nn.ReLu(dim=2)
-        self.float = self.FloatTensor
-        if use_gpu:
-            self.float = torch.cuda.FloatTensor
-            
-    def _get_final_y(self, output, batch_size, lengths):
-        '''Given output from linear layer, find the corresponding last timestep output'''
-        final_dist = []
-        for i in range(batch_size):
-            #Deals with uneven lengths in input
-            final_dist.append(output[i, lengths[i]-1].view(1, 1, self.output_dim))
-        return torch.cat(final_dist).view(batch_size, 1, self.output_dim)
+        shared = self.bottom(x)
+        return self.top1(shared), self.top2(shared)
     
-    def forward(self, input, lengths):
-        input = input.cpu().numpy()
-        lengths = lengths.cpu().numpy() 
-        #Find lengths of all intervals
-        perm_index = reversed(sorted(range(len(lengths)), key=lambda k: lengths[k]))
-        
-        #Sort the input by length in order to pad, pack sequence for LSTM
-        input = [torch.tensor(input[i]).view(-1, 22) for i in perm_index]
-        lengths = list(reversed(sorted(lengths)))
-        padded = rnn.pad_sequence(input, batch_first = True).view(len(input), max(lengths), 1)
-        pack_padded = rnn.pack_padded_sequence(padded, lengths, batch_first = True)
-        
-        if self.use_gpu:
-            pack_padded = pack_padded.cuda()
+    def name(self):
+        return 'SharedBottom(l={})'.format(self.l)
 
-        #Get batch size, sequence length
-        batch_size = pack_padded.batch_sizes[0]
-        sequence_length = len(pack_padded.batch_sizes)
-        
-        #Initialize hidden state, cell state
-        h0 = Variable(torch.zeros(self.num_layers, batch_size, self.hidden_size).type(self.float), requires_grad = False)
-        c0 = Variable(torch.zeros(self.num_layers, batch_size, self.hidden_size).type(self.float), requires_grad = False)
-        
-                
-        lstm_output, h_and_c = self.lstm(pack_padded, (h0, c0))
+class Independent(nn.Module):
 
-        #Unpack pad packed sequence, run through linear layer      
-        unpacked, lens = rnn.pad_packed_sequence(lstm_output,batch_first = True)
-        y = self.fc1(unpacked)
-        
-        #Deal with uneven lengths
-        y_intermediate = self.relu(self._get_final_y(y, batch_size, lengths))
-        
-        y_final = self.fc2(y_intermediate)
-        
-        return y_final
+    def __init__(self, l=4):
+        '''
+        l: number of layers
+        '''
+        super(Independent, self).__init__()
+        self.l = l
+        if l == 0: # keep ouput 16
+            a = 16 # effective 1 layer
+        elif l == 1: # keep parameters comparable 
+            a = int(np.round((14672/2-8) / 108))
+        elif l == 2: # keep output 16 and parameters comparable
+            a = int(np.round((14672/2-8-16*8) / 116))
+        else: # keep output 16 and parameters comparable
+            c = 14672/2 - 8 - 16*8
+            a = int(np.round((-116 + np.sqrt(116**2 + 4*(l-2)*c)) / (2 * (l-2))))
 
+        print('per layer neuron: {}'.format(a))
+        base1 = [nn.Linear(100, a), nn.ReLU(inplace=True)]
+        base2 = [nn.Linear(100, a), nn.ReLU(inplace=True)]
+        for _ in range(l-1):
+            base1.extend([nn.Linear(a, a), nn.ReLU(inplace=True)])
+            base2.extend([nn.Linear(a, a), nn.ReLU(inplace=True)])
+        base1.extend([
+            nn.Linear(a, 8),
+            nn.ReLU(inplace=True),
+            nn.Linear(8, 1)
+        ])
+        base2.extend([
+            nn.Linear(a, 8),
+            nn.ReLU(inplace=True),
+            nn.Linear(8, 1)            
+        ])
+        self.top1 = nn.Sequential(*base1)
+        self.top2 = nn.Sequential(*base2)
 
-MODELS['MLP'] = MLP
-MODELS['CNN'] = CNN
-MODELS['LSTM'] = LSTM
+    def name(self):
+        return 'Independent(l={})'.format(self.l)
+        
+    def forward(self, x):
+        return self.top1(x), self.top2(x)
+
+class MMOE(nn.Module):
+
+    def __init__(self):
+        super(MMOE, self).__init__()
+
+        n_experts = 8
+        self.experts = nn.ModuleList()
+        for _ in range(n_experts):
+            self.experts.append(
+                nn.Sequential(
+                    nn.Linear(100, 16),
+                    nn.ReLU(inplace=True)
+                )
+            )
+
+        self.gates = nn.ModuleList()
+        for _ in range(2): # 2 tasks
+            self.gates.append(
+                 nn.Sequential(
+                    nn.Linear(100, n_experts),
+                    nn.Softmax(dim=1)
+                )            
+            )
+        
+        
+        self.top1 = nn.Sequential(
+            nn.Linear(16, 8),
+            nn.ReLU(inplace=True),
+            nn.Linear(8, 1)
+        )
+        self.top2 = nn.Sequential(
+            nn.Linear(16, 8),
+            nn.ReLU(inplace=True),
+            nn.Linear(8, 1)
+        )
+        
+    def use_gate(self, outputs, gate_outputs):
+        '''
+        gate_outputs: (n, n_experts)
+        '''
+        res = 0
+        for i in range(len(self.experts)):
+            res += gate_outputs[:, i:(i+1)] * outputs[i]
+        return res
+        
+    def forward(self, x):
+        outputs = [self.experts[i](x) for i in range(len(self.experts))]
+        gate_outputs = [self.gates[i](x) for i in range(2)]
+        task1x = self.use_gate(outputs, gate_outputs[0])
+        task2x = self.use_gate(outputs, gate_outputs[1])
+        return self.top1(task1x), self.top2(task2x)
+    
+    def name(self):
+        return "MMOE()"
 
