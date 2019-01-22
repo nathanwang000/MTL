@@ -8,6 +8,8 @@ parser.add_argument('-c', type=float,
                     help='cosine similarity', default=1)
 parser.add_argument('-m', type=str,
                     help='model save directory', default='models')
+parser.add_argument('-a', type=float,
+                    help='change model alpha', default=1)
 args = parser.parse_args()
 
 import numpy as np
@@ -42,8 +44,6 @@ def generate_tasks(p=0.5, d=100, c=1, n=300, alphas=[], betas=[]):
         Y1.append(y1)
         Y2.append(y2)
     return np.vstack(X), np.array(Y1), np.array(Y2)
-
-X, Y1, Y2 = generate_tasks(p=0,alphas=[1,2],betas=[3,4])
 
 # In[179]:
 
@@ -97,7 +97,7 @@ def MTL_loss():
 from torch.utils.data import DataLoader
 cos_sim = args.c
 n = 10000
-alphas = [1, 2]
+alphas = [1*args.a, 2*args.a]
 betas = [3, 4]
 train_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas),
                         batch_size=min(1000, n), num_workers=0)
@@ -109,11 +109,11 @@ val_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas),
 
 from lib.train import TrainFeedForward
 import os
-modeldir = '{}/c={}'.format(args.m, args.c)
+modeldir = '{}/c={}/a={}'.format(args.m, args.c, args.a)
 os.system('mkdir -p {}'.format(modeldir))
 
-nets = [Independent(0), Independent(1), Independent(2),
-        SharedBottom(0), SharedBottom(1), SharedBottom(2), MMOE()]
+nets = [Independent(0), Independent(2), Independent(3),
+        SharedBottom(0), SharedBottom(2), SharedBottom(3), MMOE()]
 trainers = []
 for net in nets:
     net_name = net.name()
