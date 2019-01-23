@@ -162,7 +162,7 @@ class Train(object):
 
                 if self.use_gpu is not False:
                     x, y = to_cuda(x), to_cuda(y)
-                output, loss = self.train_step(x, y)
+                loss = self.train_step(x, y)
 
                 losses.update(loss, self.batch_size)
 
@@ -218,12 +218,13 @@ class TrainFeedForward(Train):
 
     def train_step(self, x, y):
 
-        self.optimizer.zero_grad()
-        output = self.net(x)
+        def closure():
+            self.optimizer.zero_grad()
+            output = self.net(x)
+            loss = self.criterion(output, y)
+            loss.backward()
+            return loss
         
-        loss = self.criterion(output, y) # regression loss
-        loss.backward()
-        
-        self.optimizer.step()
-        return output, loss.item()
+        loss = self.optimizer.step(closure)
+        return loss.item()
 

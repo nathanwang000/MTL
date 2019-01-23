@@ -1,13 +1,11 @@
-# coding: utf-8
-
-# In[224]:
-
 import argparse
-parser = argparse.ArgumentParser(description="MTL")
+parser = argparse.ArgumentParser(description="opt")
 parser.add_argument('-c', type=float,
                     help='cosine similarity', default=1)
 parser.add_argument('-m', type=str,
-                    help='model save directory', default='models')
+                    help='model save directory', default='optimizers')
+parser.add_argument('-n', type=str,
+                    help='net archetecture', default='Independent(1)')
 parser.add_argument('-a', type=float,
                     help='change dataset alpha (controls complexity, larger harder)',
                     default=1)
@@ -46,18 +44,10 @@ def generate_tasks(p=0.5, d=100, c=1, n=300, alphas=[], betas=[]):
         Y2.append(y2)
     return np.vstack(X), np.array(Y1), np.array(Y2)
 
-# In[179]:
-
-
 import torch
-import torch.nn as nn
-from lib.model import SharedBottom, Independent, MMOE
 torch.set_num_threads(1)
 
-    
-# In[180]:
-
-
+import torch.nn as nn
 from torch.utils.data import DataLoader  
 from torch.utils.data import Dataset
 
@@ -87,12 +77,10 @@ def MTL_loss():
         # regression loss on 2 tasks
         y1, y2 = y
         yhat1, yhat2 = yhat
-        c_ = nn.MSELoss()
+        c_ = torch.nn.MSELoss()
         return c_(yhat1.view(-1), y1.float().view(-1)) + c_(yhat2.view(-1), y2.float().view(-1))
         
     return c
-
-# In[217]:
 
 
 from torch.utils.data import DataLoader
@@ -100,33 +88,46 @@ cos_sim = args.c
 n = 10000
 alphas = [1*args.a, 2*args.a]
 betas = [3, 4]
-train_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas),
-                        batch_size=min(1000, n), num_workers=0)
-val_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas),
-                      batch_size=min(1000, n), num_workers=0)
+train_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas), batch_size=min(1000, n))
+val_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas), batch_size=min(1000, n))
 
 
-# In[218]:
-
+# ## RK4 optimizer
+from lib.optimizer import RK4, DoublingRK4, Diff, DiffMax, AdamUnbiased, DiffUnbiased
 from lib.train import TrainFeedForward
+from lib.model import Independent, SharedBottom, MMOE
+
+optimizers = [
+    # torch.optim.Adam,
+    # torch.optim.Adadelta,
+    # torch.optim.Adamax,
+    # torch.optim.ASGD,
+    # torch.optim.SGD,
+    # RK4, # very slow
+    # DoublingRK4, # very slow
+    # Diff,
+    DiffUnbiased,
+    # AdamUnbiased,
+    # DiffMax, 
+]
+
+
 import os
 modeldir = '{}/c={}/a={}'.format(args.m, args.c, args.a)
 os.system('mkdir -p {}'.format(modeldir))
 
-nets = [Independent(0), Independent(2), Independent(3),
-        SharedBottom(0), SharedBottom(2), SharedBottom(3), MMOE()]
 trainers = []
-for net in nets:
-    net_name = net.name()
-    print(net_name)
-    t = TrainFeedForward(net, train_data, val_data=val_data, criterion=MTL_loss(),
-                         n_iters=1000, n_save=30,
-                         save_filename='{}/{}.pth.tar'.format(modeldir,net_name))
+for opt in optimizers:
+    net = eval(args.n)
+    optimizer = opt(net.parameters(), lr=1e-3)
+    opt_name = opt.__name__
+    print(opt_name)
+    
+    t = TrainFeedForward(net, train_data, val_data=val_data,
+                         criterion=MTL_loss(), n_iters=1000,
+                         save_filename='{}/{}.pth.tar'.format(modeldir, opt_name),
+                         n_save=30, optimizer=optimizer)
     trainers.append(t)
     t.train()
-
-
-
-
 
 
