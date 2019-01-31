@@ -221,10 +221,12 @@ class Diff(Optimizer):
                 state['step'] += 1
 
                 # Decay the first and second moment running average coefficient
-                diff = (grad - exp_avg)**2 # this is the only change from Adam!!!!   
+                diff = (grad - exp_avg)**2 # this is the only change from Adam!!!!
+                #print(torch.median(diff/grad**2))
+                # print(torch.median(exp_avg_sq))
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
                 exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
-                denom = exp_avg_sq.sqrt().add_(group['eps']) # note: denom is per term, doesnt sound
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
 
                 bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
