@@ -176,7 +176,7 @@ class Avrng(Optimizer):
     '''
     adaptive variance reduced & (curvature) normalized gradient
     '''
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=0.01):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=1):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -279,7 +279,251 @@ class Avrng(Optimizer):
                 p.data.add_(delta)
                 #p.data.addcdiv_(-step_size, exp_avg, denom)
                 
-        return loss    
+        return [loss, loss] # two times
+
+class AdamVR(Optimizer):
+    '''
+    adaptive variance reduced & (curvature) normalized gradient
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=1):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(AdamVR, self).__init__(params, defaults)
+
+    def rewind(self):
+        '''
+        rewind 1 step back and calculate old gradient
+        '''
+        for group in self.param_groups:
+
+            for p in group['params']:
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # last change
+                    state['delta'] = torch.zeros_like(p.data)
+
+                p.data.add_(-state['delta']) # reverse change
+
+    def forward(self):
+        '''
+        forward 1 step back and calculate old gradient
+        '''
+        for group in self.param_groups:
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                    
+                state = self.state[p]
+                p.data.add_(state['delta']) # forward change
+
+                # save old grad
+                state['old_grad'] = p.grad.data.clone()
+                
+    def step(self, closure):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        # last time step
+        self.rewind()
+        closure()
+        # go back to now and save grad to old_grad
+        self.forward()
+        loss = closure()
+        
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+               
+                # Decay the first and second moment running average coefficient
+                if state['step'] == 1:
+                    bias_correction = 1 # first time no bias reduction
+                else:
+                    bias_correction = 1 - beta1 ** (state['step']-1)
+                mhat = exp_avg / bias_correction
+                
+                # variance reduced gradient:
+                gradhat = grad - state['old_grad'] + mhat
+                    
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, gradhat**2)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) # note: denom is per term, doesnt sound
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                # note: sqrt bias_correction2 is here because denominator is sqrt for bias_correction2 as well
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # save delta
+                numer = torch.min(step_size / denom, group['max_lr'] * torch.ones_like(exp_avg))
+                delta = -numer * exp_avg
+                state['delta'] = delta
+                p.data.add_(delta)
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                
+        return [loss, loss] # two times
+    
+class Adam2(Optimizer):
+    '''
+    do 2 Adam update
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=1):
+        self.adam = torch.optim.Adam(params, lr=lr, betas=betas, eps=eps)
+
+    def zero_grad(self):
+        self.adam.zero_grad()
+        
+    def step(self, closure):
+        loss1 = self.adam.step(closure)
+        loss2 = self.adam.step(closure)
+        return [loss1, loss2]
+        
+class Avrng2(Optimizer):
+    '''
+    adaptive variance reduced & (curvature) normalized gradient
+    do twice, without wasting any update
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=1):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(Avrng2, self).__init__(params, defaults)
+
+    def update1(self):
+        '''
+        rewind 1 step back and calculate old gradient
+        '''
+        for group in self.param_groups:
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                if state['step'] == 1:
+                    bias_correction = 1 # first time no bias reduction
+                else:
+                    bias_correction = 1 - beta1 ** (state['step']-1)
+                mhat = exp_avg / bias_correction
+                
+                diff = (grad - mhat)**2 # capture curvature, not variance
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) # note: denom is per term, doesnt sound
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # save delta
+                #numer = torch.min(step_size / denom,
+                #                  group['max_lr'] * torch.ones_like(exp_avg))
+                #p.data.add_(-numer * exp_avg)
+                p.data.addcdiv_(-step_size, exp_avg, denom)
+                
+                # save old grad
+                state['old_grad'] = p.grad.data.clone()
+                
+    def step(self, closure):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss1 = closure()
+        self.update1()
+
+        loss2 = closure()
+        
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+               
+                # Decay the first and second moment running average coefficient
+                if state['step'] == 1:
+                    bias_correction = 1 # first time no bias reduction
+                else:
+                    bias_correction = 1 - beta1 ** (state['step']-1)
+                mhat = exp_avg / bias_correction
+                
+                # variance reduced gradient:
+                gradhat = grad - state['old_grad'] + mhat
+                    
+                diff = (gradhat - mhat)**2 # capture curvature, not variance
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) # note: denom is per term, doesnt sound
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                # note: sqrt bias_correction2 is here because denominator is sqrt for bias_correction2 as well
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # save delta
+                # numer = torch.min(step_size / denom,
+                #                   group['max_lr'] * torch.ones_like(exp_avg))
+                # p.data.add_(-numer * exp_avg)
+                p.data.addcdiv_(-step_size, exp_avg, denom)
+                
+        return [loss1, loss2]
     
 class Diff(Optimizer):
     '''
@@ -330,9 +574,13 @@ class Diff(Optimizer):
                 state['step'] += 1
 
                 # Decay the first and second moment running average coefficient
-                diff = (grad - exp_avg)**2 # this is the only change from Adam!!!!
-                #print(torch.median(diff/grad**2))
-                # print(torch.median(exp_avg_sq))
+                if state['step'] == 1:
+                    bias_correction = 1 # first time no bias reduction
+                else:
+                    bias_correction = 1 - beta1 ** (state['step']-1)
+                mhat = exp_avg / bias_correction
+                
+                diff = (grad - mhat)**2 # this is the only change from Adam!!!!
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
                 exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
                 denom = exp_avg_sq.sqrt().add_(group['eps']) 
