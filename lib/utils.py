@@ -1,6 +1,11 @@
 import time, math, torch, shutil, glob
 import numpy as np
 import os
+import random, string, os
+
+def random_string(N=5):
+    return ''.join(random.choice(string.ascii_uppercase + string.digits)
+                   for _ in range(N))
 
 def to_cuda(x):
     try:

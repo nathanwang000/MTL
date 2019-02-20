@@ -3,6 +3,223 @@ from torch.optim import Optimizer
 from torch.optim.optimizer import required
 import math 
 
+class Sign(Optimizer):
+    '''
+    only use the sign of gradient
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps)
+        super(Sign, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+
+                #     # for book keeping
+                #     state['grad_history'] = []
+                # state['grad_history'].append(grad.cpu().clone())
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+                
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                bias_correction1 = 1 - beta1 ** state['step']
+                step_size = group['lr'] / bias_correction1
+
+                p.data.add_(-step_size, torch.sign(exp_avg))
+
+        return loss
+
+class NormalizedCurvature(Optimizer):
+    '''
+    (gt - g{t-1})^2
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps)
+        super(NormalizedCurvature, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                if state['step'] == 1:
+                    w_diff = torch.ones_like(p.data)  # don't use diff at first step
+                else:
+                    w_diff = torch.abs(p.data - state['last_w']) #+ group['eps']  
+
+                diff = ((grad - state['last_grad']) / w_diff)**2
+
+                # print(torch.min(p.data - state['last_w']))
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # step_size = 0
+                #numer = torch.min(step_size / denom, 0.1 * torch.ones_like(exp_avg))
+                numer = step_size / denom
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+                p.data.add_(-numer * exp_avg)
+
+        return loss
+    
+class MomentumCurvature(Optimizer):
+    '''
+    (gt - g{t-1})^2
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps)
+        super(MomentumCurvature, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                if state['step'] == 1:
+                    bias_correction = 1 # first time no bias reduction
+                else:
+                    bias_correction = 1 - beta1 ** (state['step']-1)
+                mhat = exp_avg / bias_correction
+                
+                #denom = torch.abs(p.data - state['last_w']) + group['eps']
+                #diff = ((grad - state['last_grad']) / denom)**2
+                diff = (grad - state['last_grad'])**2                
+                # print(torch.min(p.data - state['last_w']))
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # step_size = 0
+                #numer = torch.min(step_size / denom, 0.1 * torch.ones_like(exp_avg))
+                numer = step_size / denom
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+                p.data.add_(-numer * exp_avg)
+
+        return loss
+
 class RK4(Optimizer):
     
     def __init__(self, params, lr=required, weight_decay=0):

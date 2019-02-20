@@ -12,7 +12,6 @@ parser.add_argument('-a', type=float,
 args = parser.parse_args()
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 def generate_tasks(p=0.5, d=100, c=1, n=300, alphas=[], betas=[]):
     '''
@@ -93,20 +92,22 @@ val_data = DataLoader(CosDataset(p=cos_sim, n=n, alphas=alphas, betas=betas), ba
 
 
 # ## RK4 optimizer
-from lib.optimizer import RK4, DoublingRK4, Diff, DiffMax, AdamUnbiased, DiffUnbiased
+from lib.optimizer import RK4, DoublingRK4, Diff, DiffMax, AdamUnbiased, DiffUnbiased, MomentumCurvature, Sign
 from lib.train import TrainFeedForward
 from lib.model import Independent, SharedBottom, MMOE
 
 optimizers = [
-    # torch.optim.Adam,
+    (MomentumCurvature, 5e-3),
+    (Diff, 5e-3),    
+    (torch.optim.SGD, 0.1),
+    (torch.optim.Adam, 5e-3),
+    (Sign, 0.1),          
     # torch.optim.Adadelta,
     # torch.optim.Adamax,
     # torch.optim.ASGD,
-    # torch.optim.SGD,
     # RK4, # very slow
     # DoublingRK4, # very slow
-    # Diff,
-    DiffUnbiased,
+    # DiffUnbiased,
     # AdamUnbiased,
     # DiffMax, 
 ]
@@ -117,9 +118,9 @@ modeldir = '{}/c={}/a={}'.format(args.m, args.c, args.a)
 os.system('mkdir -p {}'.format(modeldir))
 
 trainers = []
-for opt in optimizers:
+for opt, lr in optimizers:
     net = eval(args.n)
-    optimizer = opt(net.parameters(), lr=1e-3)
+    optimizer = opt(net.parameters(), lr=lr)
     opt_name = opt.__name__
     print(opt_name)
     
