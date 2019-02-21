@@ -6,22 +6,28 @@ from torch.utils.data import TensorDataset, DataLoader
 from sklearn.externals import joblib
 from lib.utils import random_string
 
-def train(net, loader, optimizer, x_star, niters=5000):
+def train(net, loader, full_loader, optimizer, x_star, niters=5000):
     losses = []
     errors = []
     net.cuda()
     for _ in tqdm.tqdm(range(niters)):
         for x, y in loader:
             x, y = x.cuda(), y.cuda()
-            optimizer.zero_grad()
-            o = net(x)
-            l = nn.MSELoss()(o.view(-1), y)
-            l.backward()
-            optimizer.step()
+            def closure():
+                optimizer.zero_grad()
+                o = net(x)
+                l = nn.MSELoss()(o.view(-1), y)
+                l.backward()
+            l = optimizer.step(closure)
 
             p = list(net.parameters())[0].cpu().detach().numpy()
-            losses.append(l.item())
             errors.append(np.linalg.norm(p - x_star))
+
+            for x, y in full_loader:
+                x, y = x.cuda(), y.cuda()
+                o = net(x)
+                l = nn.MSELoss()(o.view(-1), y)
+            losses.append(l.item())            
             
     return errors, losses
 
@@ -69,8 +75,8 @@ def main():
     d = 50
     n = 300
     batchsizes = [int(n), int(n/2), int(n/6)] # 50, 150, 300
-    optimizations = ['MomentumCurvature', 'torch.optim.Adam', 'torch.optim.SGD']
-    lrs = [1, 0.1, 0.01, 0.001, 0.0001]
+    optimizations = ['Avrng', 'MomentumCurvature', 'torch.optim.Adam', 'torch.optim.SGD']
+    lrs = [10, 1, 0.1, 0.01, 0.001]
 
     for i in range(nrepeat): # 5
         for k in kappas: # 4
@@ -79,6 +85,7 @@ def main():
                 data = TensorDataset(torch.from_numpy(A).float(),
                                      torch.from_numpy(y).float())
                 loader = DataLoader(data, batch_size=bs)
+                full_loader = DataLoader(data, batch_size=n)                
                 for opt in optimizations: # 3
                     for lr in lrs: # 5
                         res = {
@@ -95,10 +102,11 @@ def main():
                         net = nn.Linear(d, 1, bias=False)
                         optimizer = eval(opt)(net.parameters(), lr=lr)
                         name = opt.split('.')[-1]
-                        errors, losses = train(net, loader, optimizer, x_star=x_star)
+                        errors, losses = train(net, loader, full_loader,
+                                               optimizer, x_star=x_star)
                         res['errors'] = errors
                         res['losses'] = losses
-                        joblib.dump(res, "{}/{}.pkl".format('synthetic_data_results',
+                        joblib.dump(res, "{}/{}.pkl".format('synthetic_data_results/LSR',
                                                             random_string(5)))
 
 if __name__ == '__main__':
