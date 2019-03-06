@@ -1,14 +1,17 @@
-import torch, tqdm
+import torch, tqdm, os
 import torch.nn as nn
 import numpy as np
-from lib.optimizer import Diff, Avrng, AdamVR, MomentumCurvature
+from lib.optimizer import Diff
+from lib.optimizer import AlphaAdam, AlphaDiff, AlphaSGD, AdamC1, AdamC2
+from lib.optimizer import AdaBound, CrossBound, CrossAdaBound, Swats
+from lib.utils import OptRecorder
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.externals import joblib
 from lib.utils import random_string
 
-def train(net, loader, full_loader, optimizer, x_star, niters=5000):
+def train(net, loader, full_loader, optimizer, niters=5000):
     losses = []
-    errors = []
+    opt_recorder = OptRecorder(optimizer)
     net.cuda()
     for _ in tqdm.tqdm(range(niters)):
         for x, y in loader:
@@ -20,16 +23,15 @@ def train(net, loader, full_loader, optimizer, x_star, niters=5000):
                 l.backward()
             l = optimizer.step(closure)
 
-            p = list(net.parameters())[0].cpu().detach().numpy()
-            errors.append(np.linalg.norm(p - x_star))
-
-            for x, y in full_loader:
-                x, y = x.cuda(), y.cuda()
-                o = net(x)
-                l = nn.MSELoss()(o.view(-1), y)
-            losses.append(l.item())            
+        # record full loss
+        for x, y in full_loader:
+            x, y = x.cuda(), y.cuda()
+            o = net(x)
+            l = nn.MSELoss()(o.view(-1), y)
+        losses.append(l.item())
+        opt_recorder.record()
             
-    return errors, losses
+    return losses, opt_recorder.tracker
 
 def generate_data(kappa=1, d=50, n=300):
     '''
@@ -69,18 +71,52 @@ def generate_data(kappa=1, d=50, n=300):
     print(r'\mu={:.2f}, L={:.2f}, \kappa={:.2f}'.format(mu, L, L/mu))
     return A, y, x_star
 
+def get_data(kappa, d, n, run_number):
+    savename = 'data/LSR/{}_{}_{}.pkl'.format(kappa, d, n, run_number)
+    if os.path.exists(savename):
+        return joblib.load(savename)
+    else:
+        data = generate_data(kappa, d, n)
+        joblib.dump(data, savename)
+        return data
+
 def main():
-    kappas = [1, 10**2, 10**4, 10**8]
-    nrepeat = 5
+    kappas = [1, 10**2, 10**4]
+    nrepeat = 3
     d = 50
     n = 300
     batchsizes = [int(n), int(n/2), int(n/6)] # 50, 150, 300
-    optimizations = ['Avrng', 'MomentumCurvature', 'torch.optim.Adam', 'torch.optim.SGD']
-    lrs = [10, 1, 0.1, 0.01, 0.001]
+    optimizations = [
+        'Diff',
+        'torch.optim.Adam',
+        
+        # test converting SGD
+        # 'AdaBound',
+        # 'CrossBound',
+        # 'CrossAdaBound',
+        # 'Swats',
 
-    for i in range(nrepeat): # 5
+        # test dominance
+        # 'AdamC1(1,1)',
+        # 'AdamC2(1,1)',                
+        
+        # 'AlphaDiff(1,1)', # same as MC
+        # 'AlphaAdam(1,1)', # same as Adam
+        # 'AlphaSGD(1,1)',                      
+        
+        # 'AlphaDiff(1,0)', # no var(dg)
+        # 'AlphaAdam(1,0)', # no var(g)
+        # 'torch.optim.SGD', # same as AlphaSGD(1,0) with 0 momentum
+    
+        # 'AlphaDiff(0,1)', # only var(dg)
+        # 'AlphaAdam(0,1)', # only var(g), same as AlphaSGD(0,1)
+    ]
+    
+    lrs = [100, 10, 1, 0.1, 0.01, 0.001, 0.0001]
+
+    for i in range(nrepeat): # 3
         for k in kappas: # 4
-            A, y, x_star = generate_data(k, d, n)      
+            A, y, x_star = get_data(k, d, n, i)
             for bs in batchsizes: # 3
                 data = TensorDataset(torch.from_numpy(A).float(),
                                      torch.from_numpy(y).float())
@@ -88,27 +124,34 @@ def main():
                 full_loader = DataLoader(data, batch_size=n)                
                 for opt in optimizations: # 3
                     for lr in lrs: # 5
+
                         res = {
                             'run': i,                            
                             'kappa': k,
                             'batch_size': bs,
                             'n': n,
                             'd': d, 
-                            'opt': opt,
-                            'lr': lr
+                            'opt': opt.split('.')[-1],
+                            'lr': lr,
                         }
 
                         print(res)
-                        net = nn.Linear(d, 1, bias=False)
-                        optimizer = eval(opt)(net.parameters(), lr=lr)
-                        name = opt.split('.')[-1]
-                        errors, losses = train(net, loader, full_loader,
-                                               optimizer, x_star=x_star)
-                        res['errors'] = errors
-                        res['losses'] = losses
-                        joblib.dump(res, "{}/{}.pkl".format('synthetic_data_results/LSR',
-                                                            random_string(5)))
+                        net = nn.Linear(d, 1, bias=True)
+                        if '(' in opt:
+                            alpha_index = opt.find('(')
+                            alphas = eval(opt[alpha_index:])
+                            optimizer = eval(opt[:alpha_index])(net.parameters(),
+                                             lr=lr, alphas=alphas)
+                        else:
+                            optimizer = eval(opt)(net.parameters(), lr=lr)
 
+                        losses, opt_tracker = train(net, loader, full_loader, optimizer)
+                        name = "{}/{}".format('synthetic_data_results/LSR',
+                                              random_string(5))
+                        joblib.dump(res, "{}.ind".format(name))
+                        joblib.dump(losses, "{}.loss".format(name))
+                        joblib.dump(opt_tracker, "{}.track".format(name))
+                        
 if __name__ == '__main__':
-    torch.set_num_threads(1)    
+    torch.set_num_threads(1)
     main()

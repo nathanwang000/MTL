@@ -15,3 +15,8 @@ convex and convex case.
 python opt_synthetic_exp.py
 #+END_SRC
 
+or to batch run all other experiments
+#+BEGIN_SRC bash
+bash lr_search.sh
+#+END_SRC
+

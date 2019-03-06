@@ -3,6 +3,424 @@ from torch.optim import Optimizer
 from torch.optim.optimizer import required
 import math 
 
+def crossed_zero(old, new):
+    return (old * new <= 0).float()
+
+class AlphaSGD(Optimizer):
+    '''
+    add Alpha term to SGD with variance normalization
+    '''
+    def __init__(self, params, lr=1e-3, alphas=(1, 1), betas=(0.9, 0.999),
+                 eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, alphas=alphas, eps=eps, max_lr=max_lr)
+        super(AlphaSGD, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['EMA(w2)'] = torch.zeros_like(p.data)                    
+                    state['var(w)'] = torch.zeros_like(p.data)                    
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                alpha1, alpha2 = group['alphas']                
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                # calculate variance
+                dg = grad - state['EMA(g2)']
+                state['var(g)'] = beta2 * (state['var(g)'] + (1-beta2) * dg**2)
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad)
+
+                dw = p.data - state['EMA(w2)']
+                state['var(w)'] = beta2 * (state['var(w)'] + (1-beta2) * dw**2)
+                state['EMA(w2)'].mul_(beta2).add_(1-beta2, p.data)      
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_g2 = state['EMA(g2)'] / bias_correction2
+                var_g = state['var(g)'] / bias_correction2
+                var_w = state['var(w)'] / bias_correction2
+
+                curvature = var_g
+                denom = (alpha1 + alpha2 * curvature).sqrt().add_(group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = torch.sqrt(alpha1 / (alpha2 * curvature))
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+
+class AlphaAdam(Optimizer):
+    '''
+    add Alpha term to adam
+    '''
+    def __init__(self, params, lr=1e-3, alphas=(1, 1), betas=(0.9, 0.999),
+                 eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, alphas=alphas, eps=eps, max_lr=max_lr)
+        super(AlphaAdam, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                alpha1, alpha2 = group['alphas']                
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                # calculate variance
+                dg = grad - state['EMA(g2)']
+                state['var(g)'] = beta2 * (state['var(g)'] + (1-beta2) * dg**2)
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad)
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_g2 = state['EMA(g2)'] / math.sqrt(bias_correction2)
+                var_g = state['var(g)'] / bias_correction2
+
+                denom = (alpha1 * E_g2**2 + alpha2 * var_g).sqrt().add_(group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = torch.sqrt(alpha1*E_g2**2/(alpha2*var_g))
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+
+class AlphaDiff(Optimizer):
+    '''
+    add Alpha term to diff
+    '''
+    def __init__(self, params, lr=1e-3, alphas=(1, 1), betas=(0.9, 0.999),
+                 eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, alphas=alphas, eps=eps, max_lr=max_lr)
+        super(AlphaDiff, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(dg)'] = torch.zeros_like(p.data)
+                    state['var(dg)'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                alpha1, alpha2 = group['alphas']                
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                # calculate variance
+                dg = grad - state['last_grad']
+                ddg = dg - state['EMA(dg)']
+                state['var(dg)'] = beta2 * (state['var(dg)'] + (1-beta2) * ddg**2)
+
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)                
+                state['EMA(dg)'].mul_(beta2).add_(1-beta2, dg)                
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_dg = state['EMA(dg)'] / math.sqrt(bias_correction2)
+                var_dg = state['var(dg)'] / bias_correction2
+
+                denom = (alpha1 * var_dg + alpha2 * E_dg**2).sqrt().add_(group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = torch.sqrt(alpha1*var_dg/(alpha2*E_dg**2))
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+
+class AdamC1(Optimizer):
+    '''
+    var(g) / var(w)
+    '''
+    def __init__(self, params, lr=1e-3, alphas=(1, 1), betas=(0.9, 0.999),
+                 eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, alphas=alphas, eps=eps, max_lr=max_lr)
+        super(AdamC1, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['EMA(w2)'] = torch.zeros_like(p.data)                    
+                    state['var(w)'] = torch.zeros_like(p.data)                    
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    state['EMA(dg)'] = torch.zeros_like(p.data)
+                    state['var(dg)'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                alpha1, alpha2 = group['alphas']                
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                dg = grad - state['last_grad']
+                ddg = dg - state['EMA(dg)']
+                state['var(dg)'] = beta2 * (state['var(dg)'] + (1-beta2) * ddg**2)
+                state['var(g)'] = beta2 * (state['var(g)'] +
+                                           (1-beta2) * (grad-state['EMA(g2)'])**2) 
+
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad) 
+                state['EMA(dg)'].mul_(beta2).add_(1-beta2, dg)
+                
+                dw = p.data - state['EMA(w2)']
+                state['var(w)'] = beta2 * (state['var(w)'] + (1-beta2) * dw**2)
+                state['EMA(w2)'].mul_(beta2).add_(1-beta2, p.data)      
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_g2 = state['EMA(g2)'] / math.sqrt(bias_correction2)
+                E_dg = state['EMA(dg)'] / math.sqrt(bias_correction2)                
+                var_g = state['var(g)'] / bias_correction2
+                var_w = state['var(w)'] / bias_correction2
+
+                curvature = var_g / var_w
+                denom = (alpha1*E_g2**2 + alpha2 * curvature).sqrt().add_(group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = torch.sqrt(alpha1*E_g2**2 / (alpha2 * curvature))
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+    
+class AdamC2(Optimizer):
+    '''
+    E(dg)**2
+    '''
+    def __init__(self, params, lr=1e-3, alphas=(1, 1), betas=(0.9, 0.999),
+                 eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, alphas=alphas, eps=eps, max_lr=max_lr)
+        super(AdamC2, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['EMA(w2)'] = torch.zeros_like(p.data)                    
+                    state['var(w)'] = torch.zeros_like(p.data)                    
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    state['EMA(dg)'] = torch.zeros_like(p.data)
+                    state['var(dg)'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                alpha1, alpha2 = group['alphas']                
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                dg = grad - state['last_grad']
+                ddg = dg - state['EMA(dg)']
+                state['var(dg)'] = beta2 * (state['var(dg)'] + (1-beta2) * ddg**2)
+                state['var(g)'] = beta2 * (state['var(g)'] +
+                                           (1-beta2) * (grad-state['EMA(g2)'])**2) 
+
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad) 
+                state['EMA(dg)'].mul_(beta2).add_(1-beta2, dg)
+                
+                dw = p.data - state['EMA(w2)']
+                state['var(w)'] = beta2 * (state['var(w)'] + (1-beta2) * dw**2)
+                state['EMA(w2)'].mul_(beta2).add_(1-beta2, p.data)      
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_g2 = state['EMA(g2)'] / math.sqrt(bias_correction2)
+                E_dg = state['EMA(dg)'] / math.sqrt(bias_correction2)                
+                var_g = state['var(g)'] / bias_correction2
+                var_w = state['var(w)'] / bias_correction2
+
+                curvature = E_dg**2 
+                denom = (alpha1*E_g2**2 + alpha2 * curvature).sqrt().add_(group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = torch.sqrt(alpha1*E_g2**2 / (alpha2 * curvature))
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+    
 class Sign(Optimizer):
     '''
     only use the sign of gradient
@@ -45,10 +463,6 @@ class Sign(Optimizer):
                     # Exponential moving average of squared difference in gradient values
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
 
-                #     # for book keeping
-                #     state['grad_history'] = []
-                # state['grad_history'].append(grad.cpu().clone())
-
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 beta1, beta2 = group['betas']
 
@@ -62,9 +476,84 @@ class Sign(Optimizer):
 
         return loss
 
+class NormalizedCurvature2(Optimizer):
+    '''
+    (gt - g{t-1} / m_t)^2
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(NormalizedCurvature2, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+
+                mhat = exp_avg / bias_correction1
+                diff = (grad - state['last_grad'] / mhat)**2
+                
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                if group['max_lr']:
+                    numer = torch.min(step_size / denom,
+                                      group['max_lr'] * torch.ones_like(exp_avg))
+                else:
+                    numer = step_size / denom
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                p.data.add_(-numer * exp_avg)
+
+        return loss
+    
 class NormalizedCurvature(Optimizer):
     '''
-    (gt - g{t-1})^2
+    (gt - g{t-1} / (w_t - w_{t-1}))^2
     '''
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
         if not 0.0 <= lr:
@@ -129,8 +618,6 @@ class NormalizedCurvature(Optimizer):
                 # diff = pct_grad_diff**2
                 # pct_wdiff = w_diff / state['w_diff']
                 #diff = (pct_grad_diff / pct_wdiff)**2
-
-                
                 
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
                 exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
@@ -141,18 +628,19 @@ class NormalizedCurvature(Optimizer):
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
                 # step_size = 0
-                #numer = torch.min(step_size / denom, 0.1 * torch.ones_like(exp_avg))
-                numer = step_size / denom
+                numer = torch.max(step_size / denom, 1e-8 * torch.ones_like(exp_avg))
+                #numer = step_size / denom
                 #p.data.addcdiv_(-step_size, exp_avg, denom)
                 state['last_grad'] = grad.data.clone()
-                state['last_w'] = p.data.clone()                                
+                state['last_w'] = p.data.clone()
+
                 p.data.add_(-numer * exp_avg)
 
         return loss
-    
-class MomentumCurvature(Optimizer):
+
+class CurvatureSign(Optimizer):
     '''
-    (gt - g{t-1})^2
+    lr * / |(g_t - g_{t-1})| * sign(m_t)
     '''
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=None):
         if not 0.0 <= lr:
@@ -164,7 +652,7 @@ class MomentumCurvature(Optimizer):
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
         defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
-        super(MomentumCurvature, self).__init__(params, defaults)
+        super(CurvatureSign, self).__init__(params, defaults)
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -228,10 +716,462 @@ class MomentumCurvature(Optimizer):
                 #p.data.addcdiv_(-step_size, exp_avg, denom)
                 state['last_grad'] = grad.data.clone()
                 state['last_w'] = p.data.clone()                                
+                p.data.add_(-numer * torch.sign(exp_avg))
+
+        return loss
+
+class RCSign(Optimizer):
+    '''
+    Sign method normalized by relative cuvature (fix issue with gradient)
+    lr * |min(g_t, g_{t-1}) / (g_t - g_{t-1})| * sign(m_t)
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(RCSign, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                denom = torch.abs(grad)#(torch.abs(grad) + torch.abs(state['last_grad'])) / 2
+                #denom = torch.min(torch.abs(grad), torch.abs(state['last_grad']))                
+                #diff = ((grad - state['last_grad']) / denom)**2
+                diff = torch.abs((grad - state['last_grad']) / denom)
+                #diff = torch.min(diff, 10**6 * torch.ones_like(exp_avg))
+
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                #denom = exp_avg_sq.sqrt().add_(group['eps'])
+                denom = exp_avg_sq.add_(group['eps'])                 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                #step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+                step_size = group['lr'] * bias_correction2 / bias_correction1          
+
+                if group['max_lr']:
+                    numer = torch.min(step_size / denom,
+                                      group['max_lr'] * torch.ones_like(exp_avg))
+                else:
+                    numer = step_size / denom
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+                p.data.add_(-numer * torch.sign(exp_avg))
+
+        return loss
+
+class EffectiveMCSign(Optimizer):
+    '''
+    (gt - g{t-1})^2
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, threshold=1e-3):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, threshold=threshold)
+        super(EffectiveMCSign, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['effective_lr'] = torch.ones_like(p.data) * group['lr']
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                diff = (grad - state['last_grad'])**2                
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+
+                step_size = group['threshold'] * math.sqrt(bias_correction2) / bias_correction1
+                ratio = step_size / denom
+
+                ratio[ratio > 1] = 1.1
+                ratio[ratio < 1] = 0.99
+                state['effective_lr'] = torch.min(torch.max(state['effective_lr'] * ratio,
+                                                            group['lr'] * torch.ones_like(p.data)),
+                                                  100 * group['lr'] * torch.ones_like(p.data)) # at most increase by 10
+                
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                p.data.add_(-state['effective_lr'] * exp_avg)
+
+        return loss
+
+class SecondMoment(Optimizer):
+    '''
+    no variance, just divide by abs(EMA(gt-gt-1))
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(SecondMoment, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * bias_correction2 / bias_correction1
+
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                diff = (grad - state['last_grad']) / (exp_avg / bias_correction1)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = torch.abs(exp_avg_sq).add_(group['eps'])
+                #denom = torch.abs(exp_avg_sq).add_(1) 
+
+                numer = step_size / denom
+                #numer = torch.min(step_size / denom,
+                #                  1e-3 * torch.ones_like(exp_avg))
+
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
                 p.data.add_(-numer * exp_avg)
 
         return loss
 
+class DoubleMomentum(Optimizer):
+    '''
+    numerator contains another momentum
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(DoubleMomentum, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                #denom = torch.abs(p.data - state['last_w']) + group['eps']
+                #diff = ((grad - state['last_grad']) / denom)**2
+                diff = (grad - state['last_grad'])**2                
+                # print(torch.min(p.data - state['last_w']))
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                if group['max_lr']:
+                    numer = torch.min(step_size / denom,
+                                      group['max_lr'] * torch.ones_like(exp_avg))
+                else:
+                    numer = step_size / denom
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+                p.data.add_(-numer * exp_avg * torch.abs(exp_avg))
+
+        return loss
+
+class AlphaDiff2(Optimizer):
+    '''
+    add Alpha term to diff, and also use var to measure 2nd order info
+    '''
+    def __init__(self, params, lr=1e-3, alphas=(1, 1), betas=(0.9, 0.999),
+                 eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, alphas=alphas, eps=eps, max_lr=max_lr)
+        super(AlphaDiff2, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(dg)'] = torch.zeros_like(p.data)
+                    state['var(dg)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                alpha1, alpha2 = group['alphas']                
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                # calculate variance
+                dg = grad - state['last_grad']
+                ddg = dg - state['EMA(dg)']
+                state['var(dg)'] = beta2 * (state['var(dg)'] + (1-beta2) * ddg**2)
+                state['var(g)'] = beta2 * (state['var(g)'] +
+                                           (1-beta2) * (grad-state['EMA(g2)'])**2) 
+
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad) 
+                state['EMA(dg)'].mul_(beta2).add_(1-beta2, dg)
+
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_dg = state['EMA(dg)'] / bias_correction2
+                E_g2 = state['EMA(g2)'] / bias_correction2                
+                var_g = state['var(g)'] / bias_correction2
+                var_dg = state['var(dg)'] / bias_correction2
+
+                denom = (alpha1 * var_dg + alpha2 * var_g).sqrt().add_(group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = torch.sqrt(alpha1*var_dg/(alpha2*var_g))
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+
+class Diff(Optimizer):
+    '''
+    use V to record difference between estimates instead!
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps)
+        super(Diff, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    state['last_grad'] = torch.zeros_like(p.data)                    
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                diff = (grad - state['last_grad'])**2
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, diff)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+
+        return loss
+    
 class MomentumCurvature2(Optimizer):
     '''
     abs(gt - g{t-1})
@@ -306,6 +1246,152 @@ class MomentumCurvature2(Optimizer):
                 #p.data.addcdiv_(-step_size, exp_avg, denom)
                 state['last_grad'] = grad.data.clone()
                 p.data.add_(-numer * exp_avg)
+
+        return loss
+
+class MomentumCurvature3(Optimizer):
+    '''
+    (E(gt - g{t-1}))**2
+    this effectively just makes the learning rate of MC times 10 b/c 1 - betas[0] = 0.1
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999, 0.9), eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(MomentumCurvature3, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    state['exp_avg_diff'] = torch.zeros_like(p.data)                    
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq, exp_avg_diff = state['exp_avg'], state['exp_avg_sq'], state['exp_avg_diff']
+                beta1, beta2, beta3 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                bias_correction3 = 1 - beta3 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+     
+                diff = grad - state['last_grad']
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_diff.mul_(beta1).add_(1 - beta3, diff)
+                # exp_avg_sq.mul_(beta2).add_(1 - beta2, exp_avg_diff**2)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2,
+                                            (exp_avg_diff / bias_correction3)**2)
+                denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                numer = step_size / denom * torch.abs(exp_avg)
+                if group['max_lr']:
+                    numer = torch.min(numer,
+                                      group['max_lr'] * torch.ones_like(exp_avg))
+                    
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['last_grad'] = grad.data.clone()
+                p.data.add_(-numer * torch.sign(exp_avg))
+
+        return loss
+
+class Adam3(Optimizer):
+    '''
+    E(gt)**2
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, max_lr=None):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr)
+        super(Adam3, self).__init__(params, defaults)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # Decay the first and second moment running average coefficient
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+     
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                # exp_avg_sq.mul_(beta2).add_(1 - beta2, exp_avg**2)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2,
+                                            (exp_avg / bias_correction1)**2)
+                denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                numer = step_size / denom * torch.abs(exp_avg)
+                if group['max_lr']:
+                    numer = torch.min(numer,
+                                      group['max_lr'] * torch.ones_like(exp_avg))
+                    
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                p.data.add_(-numer * torch.sign(exp_avg))
 
         return loss
     
@@ -832,7 +1918,7 @@ class Avrng2(Optimizer):
                 
         return [loss1, loss2]
     
-class Diff(Optimizer):
+class Diff2(Optimizer):
     '''
     use V to record difference between estimates instead!
     '''
@@ -846,7 +1932,7 @@ class Diff(Optimizer):
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
         defaults = dict(lr=lr, betas=betas, eps=eps)
-        super(Diff, self).__init__(params, defaults)
+        super(Diff2, self).__init__(params, defaults)
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -1192,3 +2278,644 @@ class AdamUnbiased(Optimizer):
 
         return loss
 
+class AdaBound(Optimizer):
+    """Implements AdaBound algorithm.
+    It has been proposed in `Adaptive Gradient Methods with Dynamic Bound of Learning Rate`_.
+    Arguments:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+        lr (float, optional): Adam learning rate (default: 1e-3)
+        betas (Tuple[float, float], optional): coefficients used for computing
+            running averages of gradient and its square (default: (0.9, 0.999))
+        final_lr (float, optional): final (SGD) learning rate (default: 0.1)
+        gamma (float, optional): convergence speed of the bound functions (default: 1e-3)
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-8)
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        amsbound (boolean, optional): whether to use the AMSBound variant of this algorithm
+    .. Adaptive Gradient Methods with Dynamic Bound of Learning Rate:
+        https://openreview.net/forum?id=Bkg3g2R9FX
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), final_lr=0.1, gamma=1e-3,
+                 eps=1e-8, weight_decay=0, amsbound=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        if not 0.0 <= final_lr:
+            raise ValueError("Invalid final learning rate: {}".format(final_lr))
+        if not 0.0 <= gamma < 1.0:
+            raise ValueError("Invalid gamma parameter: {}".format(gamma))
+        defaults = dict(lr=lr, betas=betas, final_lr=final_lr, gamma=gamma, eps=eps,
+                        weight_decay=weight_decay, amsbound=amsbound)
+        super(AdaBound, self).__init__(params, defaults)
+
+        self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))
+
+    def __setstate__(self, state):
+        super(AdaBound, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsbound', False)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group, base_lr in zip(self.param_groups, self.base_lrs):
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                if grad.is_sparse:
+                    raise RuntimeError(
+                        'Adam does not support sparse gradients, please consider SparseAdam instead')
+                amsbound = group['amsbound']
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    if amsbound:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsbound:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsbound:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # Applies bounds on actual learning rate
+                # lr_scheduler cannot affect final_lr, this is a workaround to apply lr decay
+                final_lr = group['final_lr'] * group['lr'] / base_lr
+                lower_bound = final_lr * (1 - 1 / (group['gamma'] * state['step'] + 1))
+                upper_bound = final_lr * (1 + 1 / (group['gamma'] * state['step']))
+                step_size = torch.full_like(denom, step_size)
+                step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
+                state['alpha_ratio'] = torch.ones_like(p.data) * \
+                                       (1-1/(group['gamma']*state['step']+1))
+                
+                p.data.add_(-step_size)
+
+        return loss
+
+class CrossBound(Optimizer):
+    """Implements AdaBound algorithm.
+    It has been proposed in `Adaptive Gradient Methods with Dynamic Bound of Learning Rate`_.
+    Arguments:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+        lr (float, optional): Adam learning rate (default: 1e-3)
+        betas (Tuple[float, float], optional): coefficients used for computing
+            running averages of gradient and its square (default: (0.9, 0.999))
+        final_lr (float, optional): final (SGD) learning rate (default: 0.1)
+        gamma (float, optional): convergence speed of the bound functions (default: 1e-3)
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-8)
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        amsbound (boolean, optional): whether to use the AMSBound variant of this algorithm
+    .. Adaptive Gradient Methods with Dynamic Bound of Learning Rate:
+        https://openreview.net/forum?id=Bkg3g2R9FX
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), final_lr=0.1, gamma=1e-3,
+                 eps=1e-8, weight_decay=0, amsbound=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        if not 0.0 <= final_lr:
+            raise ValueError("Invalid final learning rate: {}".format(final_lr))
+        if not 0.0 <= gamma < 1.0:
+            raise ValueError("Invalid gamma parameter: {}".format(gamma))
+        defaults = dict(lr=lr, betas=betas, final_lr=final_lr, gamma=gamma, eps=eps,
+                        weight_decay=weight_decay, amsbound=amsbound)
+        super(CrossBound, self).__init__(params, defaults)
+
+        self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))
+
+    def __setstate__(self, state):
+        super(AdaBound, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsbound', False)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group, base_lr in zip(self.param_groups, self.base_lrs):
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                if grad.is_sparse:
+                    raise RuntimeError(
+                        'Adam does not support sparse gradients, please consider SparseAdam instead')
+                amsbound = group['amsbound']
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['feature_step'] = torch.zeros_like(p.data)
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    if amsbound:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsbound:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+                state['feature_step'] += crossed_zero(exp_avg,
+                                                      exp_avg * beta1 + \
+                                                      (1 - beta1) * grad)
+
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
+
+                # Decay the first and second moment running average coefficient
+                
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsbound:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # Applies bounds on actual learning rate
+                # lr_scheduler cannot affect final_lr, this is a workaround to apply lr decay
+                final_lr = group['final_lr'] * group['lr'] / base_lr
+                lower_bound = final_lr * (1 - 1 / (group['gamma'] * state['feature_step'] + 1))
+                upper_bound = final_lr * (1 + 1 / (group['gamma'] * state['feature_step']))
+
+                step_size = torch.max(torch.min(step_size / denom, upper_bound),
+                                      lower_bound) * exp_avg
+                # step_size = torch.full_like(denom, step_size)
+                # step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
+                p.data.add_(-step_size)
+                state['alpha_ratio'] = 1-1/(group['gamma']*state['feature_step']+1)
+                
+        return loss
+
+class CrossAdaBound(Optimizer):
+    """Implements AdaBound algorithm.
+    It has been proposed in `Adaptive Gradient Methods with Dynamic Bound of Learning Rate`_.
+    Arguments:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+        lr (float, optional): Adam learning rate (default: 1e-3)
+        betas (Tuple[float, float], optional): coefficients used for computing
+            running averages of gradient and its square (default: (0.9, 0.999))
+        final_lr (float, optional): final (SGD) learning rate (default: 0.1)
+        gamma (float, optional): convergence speed of the bound functions (default: 1e-3)
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-8)
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        amsbound (boolean, optional): whether to use the AMSBound variant of this algorithm
+    .. Adaptive Gradient Methods with Dynamic Bound of Learning Rate:
+        https://openreview.net/forum?id=Bkg3g2R9FX
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), final_lr=0.1, gamma=1e-3,
+                 wait=10, eps=1e-8, weight_decay=0, amsbound=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        if not 0.0 <= final_lr:
+            raise ValueError("Invalid final learning rate: {}".format(final_lr))
+        if not 0.0 <= gamma < 1.0:
+            raise ValueError("Invalid gamma parameter: {}".format(gamma))
+        defaults = dict(lr=lr, betas=betas, final_lr=final_lr, gamma=gamma, eps=eps,
+                        weight_decay=weight_decay, amsbound=amsbound, wait=wait)
+        super(CrossAdaBound, self).__init__(params, defaults)
+
+        self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))
+
+    def __setstate__(self, state):
+        super(AdaBound, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsbound', False)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group, base_lr in zip(self.param_groups, self.base_lrs):
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                if grad.is_sparse:
+                    raise RuntimeError(
+                        'Adam does not support sparse gradients, please consider SparseAdam instead')
+                amsbound = group['amsbound']
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['feature_step'] = torch.zeros_like(p.data)
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    if amsbound:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+                    state['since_crossed_zero'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsbound:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+                direction_crossed_zero = crossed_zero(exp_avg,
+                                                      exp_avg * beta1 + \
+                                                      (1 - beta1) * grad)
+                state['feature_step'].add_(direction_crossed_zero)
+                state['since_crossed_zero'].add_(1).mul_(1 - direction_crossed_zero)
+                forget = (state['since_crossed_zero'] >= group['wait']).float()
+                state['feature_step'].add_(-forget)
+                state['since_crossed_zero'].mul_(1 - forget) 
+                state['feature_step'] = torch.max(torch.zeros_like(p.data),
+                                                  state['feature_step'])
+
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsbound:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # Applies bounds on actual learning rate
+                # lr_scheduler cannot affect final_lr, this is a workaround to apply lr decay
+                final_lr = group['final_lr'] * group['lr'] / base_lr
+                lower_bound = final_lr * (1-1/(group['gamma']*state['feature_step']+1))
+                upper_bound = final_lr * (1+1/(group['gamma'] * state['feature_step']))
+
+                step_size = torch.max(torch.min(step_size / denom, upper_bound),
+                                      lower_bound) * exp_avg
+                # step_size = torch.full_like(denom, step_size)
+                # step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
+
+                # how much sgd it is
+                state['alpha_ratio'] = 1-1/(group['gamma']*state['feature_step']+1)
+                p.data.add_(-step_size)
+
+        return loss
+    
+class CrossVarSGD(Optimizer):
+    '''
+    use whether momentum cross zero to adjust learning rate
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999),
+                 final_lr=0.1, gamma=1e-3,
+                 eps=1e-8, max_lr=None):
+
+        final_lr = lr / final_lr        
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps, max_lr=max_lr,
+                        final_lr=final_lr, gamma=gamma)
+        super(CrossVarSGD, self).__init__(params, defaults)
+        self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))        
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group, base_lr in zip(self.param_groups, self.base_lrs):
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['feature_step'] = torch.zeros_like(p.data)
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['EMA(w2)'] = torch.zeros_like(p.data)                    
+                    state['var(w)'] = torch.zeros_like(p.data)                    
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    # keep last gradient
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['last_w'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                state['step'] += 1
+                state['feature_step'] += crossed_zero(state['EMA(g)'],
+                                                      state['EMA(g)'] * beta1 + \
+                                                      (1 - beta1) * grad)
+                
+
+                # Decay the first and second moment running average coefficient
+                # calculate variance
+                dg = grad - state['EMA(g2)']
+                state['var(g)'] = beta2 * (state['var(g)'] + (1-beta2) * dg**2)
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad)
+
+                dw = p.data - state['EMA(w2)']
+                state['var(w)'] = beta2 * (state['var(w)'] + (1-beta2) * dw**2)
+                state['EMA(w2)'].mul_(beta2).add_(1-beta2, p.data)      
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_g2 = state['EMA(g2)'] / bias_correction2
+                var_g = state['var(g)'] / bias_correction2
+                var_w = state['var(w)'] / bias_correction2
+
+                curvature = var_g
+
+                final_lr = group['final_lr'] * group['lr'] / base_lr
+                lower_bound = final_lr * (1 - 1 / \
+                                          (group['gamma'] * state['feature_step'] + 1))
+
+                denom = curvature.sqrt().add_(lower_bound + group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = lower_bound / torch.sqrt(curvature)
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                
+                state['last_grad'] = grad.data.clone()
+                state['last_w'] = p.data.clone()                                
+
+        return loss
+
+class CrossAdaSGD(Optimizer):
+    '''
+    add Alpha term to SGD with variance normalization
+    effective learning rate can be both high and low
+    by dynamically adjust feature steps
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999),
+                 final_lr=0.1, gamma=1e-3, wait=100, # wait steps before decrease eps
+                 eps=1e-8):
+
+        final_lr = lr / final_lr
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, wait=wait, eps=eps,
+                        final_lr=final_lr, gamma=gamma)
+        super(CrossAdaSGD, self).__init__(params, defaults)
+        self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))        
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group, base_lr in zip(self.param_groups, self.base_lrs):
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['feature_step'] = torch.zeros_like(p.data)
+                    # Exponential moving average of gradient values
+                    state['EMA(g)'] = torch.zeros_like(p.data)
+                    state['EMA(g2)'] = torch.zeros_like(p.data)
+                    state['var(g)'] = torch.zeros_like(p.data)
+                    state['last_grad'] = torch.zeros_like(p.data)
+                    state['since_crossed_zero'] = torch.zeros_like(p.data)
+
+                beta1, beta2 = group['betas']
+                state['step'] += 1
+                direction_crossed_zero = crossed_zero(state['EMA(g)'],
+                                                      state['EMA(g)'] * beta1 + \
+                                                      (1 - beta1) * grad)
+                state['feature_step'].add_(direction_crossed_zero)
+                state['since_crossed_zero'].add_(1).mul_(1 - direction_crossed_zero)
+                forget = (state['since_crossed_zero'] >= group['wait']).float()
+                state['feature_step'].add_(-forget)
+                state['feature_step'] = torch.max(torch.zeros_like(p.data),
+                                                  state['feature_step'])
+                
+                # Decay the first and second moment running average coefficient
+                # calculate variance
+                dg = grad - state['EMA(g2)']
+                state['var(g)'] = beta2 * (state['var(g)'] + (1-beta2) * dg**2)
+                state['EMA(g)'].mul_(beta1).add_(1-beta1, grad)
+                state['EMA(g2)'].mul_(beta2).add_(1-beta2, grad)
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                E_g = state['EMA(g)'] / bias_correction1
+                E_g2 = state['EMA(g2)'] / bias_correction2
+                var_g = state['var(g)'] / bias_correction2
+
+                curvature = var_g
+
+                final_lr = group['final_lr'] * group['lr'] / base_lr
+                lower_bound = final_lr * (1 - 1 / \
+                                          (group['gamma'] * state['feature_step'] + 1))
+
+                denom = curvature.sqrt().add_(lower_bound + group['eps'])
+                # for book keeping purpose
+                state['alpha_ratio'] = (lower_bound+group['eps']) / torch.sqrt(curvature)
+                
+                p.data.addcdiv_(-group['lr'], E_g, denom)
+                state['last_grad'] = grad.data.clone()
+
+        return loss
+    
+class Swats(Optimizer):
+    '''
+    switch from Adam to SGD https://arxiv.org/pdf/1712.07628.pdf
+    '''
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-9):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps)
+        super(Swats, self).__init__(params, defaults)
+        self.SGD = False # SGD phase or not
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['sgd_m'] = torch.zeros_like(p.data)
+                    state['sgd_lr'] = 0
+                    state['^'] = 0 # learning rate in sgd phase
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared difference in gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+                state['step'] += 1
+
+                if self.SGD:
+                    state['sgd_m'].mul_(beta1).add_(grad) # note no 1-beta1
+                    p.data.add_(-(1-beta1) * state['^'], state['sgd_m'])
+                    state['alpha_ratio'] = torch.ones_like(p.data)
+                    continue
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).add_(1 - beta2, grad**2)
+                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                pk = -step_size * exp_avg / denom
+                p.data.add_(pk)
+                #p.data.addcdiv_(-step_size, exp_avg, denom)
+                state['alpha_ratio'] = torch.zeros_like(p.data)
+
+                pk = pk.view(-1)
+                grad = grad.view(-1)
+                if pk.dot(grad) != 0:
+                    step_size = - pk.dot(pk) / pk.dot(grad)
+                    state['sgd_lr'] = state['sgd_lr'] * beta2 + (1-beta2) * step_size
+                    lr_stability = state['sgd_lr'] / bias_correction2 - step_size
+                    if state['step'] > 1 and \
+                       torch.abs(lr_stability) < group['eps']:
+                        self.SGD = True
+                        state['^'] = state['sgd_lr'] / bias_correction2
+        return loss

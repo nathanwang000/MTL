@@ -18,6 +18,54 @@ def to_cuda(x):
         x = [x_.cuda() for x_ in x]
     return x
 
+class OptRecorder(object):
+    """collect items in optimizer"""
+    def __init__(self, optimizer, n=10):
+        self.opt = optimizer
+        self.n = n # number of tracked parameters
+        # randomly choose n parameters for each layer
+        self.index = {}
+        self.tracker = [] 
+
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                length = len(p.data.cpu().detach().numpy().ravel())
+                ntrack = min(n, length)
+                self.index[p] = np.random.choice(range(length), ntrack, replace=False)
+                self.tracker.append({
+                    "grad": [[] for _ in range(ntrack)],
+                    "param": [[] for _ in range(ntrack)],
+                    "alpha_ratio": [[] for _ in range(ntrack)],
+                    "feature_step": [[] for _ in range(ntrack)]
+                })
+
+    def record(self):
+        ind = 0
+        for group in self.opt.param_groups:
+            for param in group['params']:
+                state = self.opt.state[param]
+                g = param.grad.data.cpu().detach().numpy().ravel()
+                p = param.data.cpu().detach().numpy().ravel()
+
+                if 'alpha_ratio' in state:
+                    a = state['alpha_ratio'].cpu().detach().numpy().ravel()
+                else:
+                    a = np.ones_like(g)
+
+                if 'feature_step' in state:
+                    f = state['feature_step'].cpu().detach().numpy().ravel()
+                elif 'step' in state:
+                    f = np.ones_like(g) * state['step']
+                else:
+                    f = np.ones_like(g)
+
+                for i, index in enumerate(self.index[param]):
+                    self.tracker[ind]['grad'][i].append(g[index])
+                    self.tracker[ind]['param'][i].append(p[index])                    
+                    self.tracker[ind]['alpha_ratio'][i].append(a[index])
+                    self.tracker[ind]['feature_step'][i].append(f[index])                    
+                ind += 1
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):
