@@ -2,6 +2,7 @@ import time, math, torch, shutil, glob
 import numpy as np
 import os
 import random, string, os
+import glob
 
 def random_string(N=5):
     return ''.join(random.choice(string.ascii_uppercase + string.digits)
@@ -36,7 +37,8 @@ class OptRecorder(object):
                     "grad": [[] for _ in range(ntrack)],
                     "param": [[] for _ in range(ntrack)],
                     "alpha_ratio": [[] for _ in range(ntrack)],
-                    "feature_step": [[] for _ in range(ntrack)]
+                    "feature_step": [[] for _ in range(ntrack)],
+                    "lr": [[] for _ in range(ntrack)],         
                 })
 
     def record(self):
@@ -63,7 +65,8 @@ class OptRecorder(object):
                     self.tracker[ind]['grad'][i].append(g[index])
                     self.tracker[ind]['param'][i].append(p[index])                    
                     self.tracker[ind]['alpha_ratio'][i].append(a[index])
-                    self.tracker[ind]['feature_step'][i].append(f[index])                    
+                    self.tracker[ind]['feature_step'][i].append(f[index])
+                    self.tracker[ind]['lr'][i].append(group['lr'])   
                 ind += 1
 
 class AverageMeter(object):
@@ -107,12 +110,25 @@ def smooth(sequence, step=1):
     out = np.convolve(sequence, np.ones(step), 'valid') / step
     return out
 
-def random_split_dataset(dataset, proportions):
+def random_split_dataset(dataset, proportions, seed=None):
     n = len(dataset)
     ns = [int(math.floor(p*n)) for p in proportions]
     ns[-1] += n - sum(ns)
-    return torch.utils.data.random_split(dataset, ns)
-    
+
+    def random_split(dataset, lengths):
+        if sum(lengths) != len(dataset):
+            raise ValueError("Sum of input lengths does not equal\
+            the length of the input dataset!")
+
+        if seed is not None:
+            np.random.seed(seed)
+        indices = np.random.permutation(sum(lengths))
+        return [torch.utils.data.Subset(dataset, indices[offset - length:offset])\
+                for offset, length in zip(torch._utils._accumulate(lengths), lengths)]
+    #return torch.utils.data.random_split(dataset, ns)
+    return random_split(dataset, ns)
+
+
 def timeSince(since):
     now = time.time()
     s = now - since
