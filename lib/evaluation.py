@@ -102,18 +102,20 @@ def plot_train_val_multiple(patterns, colors=['blue', 'orange', 'green', 'red',
         
 def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
                    methods=None, method2label=None, lr=None, start=0, end=-1, 
-                   default_setting=None, ylabel=None):
+                   default_setting=None, ylabel=None, q_low=25, q_high=75):
     import matplotlib.pyplot as plt        
     assert 'train_losses' in train_pattern, 'train_losses must appear in train_pattern'
     methods_settings = {}
     val_settings = {}
     test_settings = {}
-    accs = {}
+    accs = {} # accs are based on best validation performance
+    best_val_test_error = {}
     for fn in sorted(glob.glob(train_pattern)):
         method_setting = fn.split('/')[-1].split('^')[0].split('-')
         method, setting = method_setting[0], '-'.join(method_setting[1:])
         
-        method_lr = '-'.join(method_setting[1:3]) if method_setting[1] == '1e' else method_setting[1]
+        method_lr = '-'.join(method_setting[1:3]) \
+                    if method_setting[1] == '1e' else method_setting[1]
         if lr is not None and lr != float(method_lr):
             continue
         if methods is not None and method not in methods:
@@ -131,53 +133,78 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
             accs[method][setting] = []
         
         tr_loss = smooth(joblib.load(fn), smooth_window)
-        val_error = smooth(joblib.load(fn.replace('train_losses', 'val_errors')), smooth_window)
-        test_error = smooth(joblib.load(fn.replace('train_losses', 'test_errors')), smooth_window)
+        val_error = smooth(joblib.load(fn.replace('train_losses', 'val_errors')),
+                           smooth_window)
+        test_error = smooth(joblib.load(fn.replace('train_losses', 'test_errors')),
+                            smooth_window)
         #if len(tr_loss)==10: print(fn)
             
         methods_settings[method][setting].append(tr_loss)
         val_settings[method][setting].append(val_error)
         test_settings[method][setting].append(test_error)
-        accs[method][setting].append(float(fn.split('/')[-1].split('^')[1]))
+
+        # change the following two to see different evaluation
+        best_error_index = np.argmin(val_error)
+        # best_error_index = -1
+        min_val_error = val_error[best_error_index]
         
+        accs[method][setting].append(test_error[best_error_index])
+
+        if best_val_test_error.get(method) is None:
+            best_val_test_error[method] = (min_val_error,
+                                           test_error[best_error_index], fn)
+        else:
+            val_best_error, test_best_error, fn_best = best_val_test_error[method]
+            if val_best_error >= min_val_error:
+                val_best_error = min_val_error
+                test_best_error = test_error[best_error_index]
+                best_val_test_error[method] = (val_best_error, test_best_error, fn)
+            
     for method, setting_dict in val_settings.items():
+
+        val_best_error, test_best_error, fn_best = best_val_test_error[method]   
+        print('{} test: {:.3f} val: {:.3f} fn:{}'.format(method, test_best_error,
+                                                     val_best_error, fn_best))
+        
         setting_areas = []
         for setting, v in setting_dict.items():
             # find the smallest area
             max_len = max([len(a) for a in v])
             v = [a for a in v if len(a) == max_len]
             area = np.mean([a[start:end] for a in v])
-            #end_ = min_len if end == -1 else min(end, min_len)
-            #area = np.mean([a[start:end_] for a in v])            
             setting_areas.append((setting, area))
         setting = sorted(setting_areas, key=lambda x: x[1])[0][0]
             
         def plot_setting():
-            print('{}: {:.2f}% ({:.2f}) {} runs'.format(method, np.mean(accs[method][setting]), 
-                                                        np.std(accs[method][setting]),
-                                                        len(accs[method][setting])))
-            
             v = test_settings[method][setting]
             max_len = max([len(a) for a in v])
-            v = [a for a in v if len(a) == max_len]            
-            #min_len = min([len(a) for a in v])
-            #v = [a[:min_len] for a in v]
+            v = [a for a in v if len(a) == max_len]
+
+            # print('{}: {:.3f} ({:.2f}) {} runs'.format(method,
+            #                                            np.mean(accs[method][setting]), 
+            #                                            np.std(accs[method][setting]),
+            #                                            len(v)))
+            
             if method2label is None:
                 label = method + '-' + setting
             else:
                 label = method2label.get(method, method)
             #p = plt.plot(sum(v) / len(v), label=method + '-' + setting)#, c=colors[i]
             p = plt.plot(np.percentile(v, 50, 0), label=label, ls='--')
-            plt.fill_between(np.arange(len(np.percentile(v, 25, 0))),
-                             np.percentile(v, 25, 0), np.percentile(v, 75, 0), 
+            plt.fill_between(np.arange(len(np.percentile(v, q_low, 0))),
+                             np.percentile(v, q_low, 0), np.percentile(v, q_high, 0), 
                              alpha=0.1, color=p[-1].get_color())
             
             if default_setting and method in default_setting and\
             default_setting[method] in test_settings[method]:
                 v = test_settings[method][default_setting[method]]
+                max_len = max([len(a) for a in v])
+                v = [a for a in v if len(a) == max_len]            
+                
                 p = plt.plot(np.percentile(v, 50, 0), ls='-', c=p[-1].get_color())
-                plt.fill_between(np.arange(len(np.percentile(v, 25, 0))),
-                                 np.percentile(v, 25, 0), np.percentile(v, 75, 0), 
+                plt.fill_between(np.arange(len(np.percentile(v, q_low, 0))),
+                                 np.percentile(v, q_low, 0),
+                                 np.percentile(v, q_high, 0), 
                                  alpha=0.1, color=p[-1].get_color())
                 
         plot_setting()
@@ -195,7 +222,7 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
 
 def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
               methods=None, method2label=None, lr=None, report_result=False, start=0,
-              end=-1, default_setting=None):
+              end=-1, default_setting=None, q_low=25, q_high=75):
     import matplotlib.pyplot as plt    
     methods_settings = {}
     accs = {}
@@ -238,12 +265,10 @@ def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None,
             v = setting_dict[setting]
             max_len = max([len(a) for a in v])
             v = [a for a in v if len(a) == max_len]                        
-            # min_len = min([len(a) for a in v])
-            # v = [a[:min_len] for a in v]
             
             print('{}: {:.2f}% ({:.2f}) {} runs'.format(method, np.mean(accs[method][setting]), 
                                                 np.std(accs[method][setting]),
-                                                len(accs[method][setting])))
+                                                len(v)))
             
             if method2label is None:
                 label = method + '-' + setting
@@ -251,28 +276,33 @@ def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None,
                 label = method2label.get(method, method)
             #p = plt.plot(sum(v) / len(v), label=method + '-' + setting)#, c=colors[i]) 
             p = plt.plot(np.percentile(v, 50, 0), label=label, ls='--')
-            plt.fill_between(np.arange(len(np.percentile(v, 25, 0))),
-                             np.percentile(v, 25, 0), np.percentile(v, 75, 0), 
+            plt.fill_between(np.arange(len(np.percentile(v, q_low, 0))),
+                             np.percentile(v, q_low, 0), np.percentile(v, q_high, 0), 
                              alpha=0.1, color=p[-1].get_color())
             
             if default_setting and method in default_setting and default_setting[method] in setting_dict:
                 v = setting_dict[default_setting[method]]
+                max_len = max([len(a) for a in v])
+                v = [a for a in v if len(a) == max_len]                        
+                
                 p = plt.plot(np.percentile(v, 50, 0), ls='-', c=p[-1].get_color())
-                plt.fill_between(np.arange(len(np.percentile(v, 25, 0))),
-                                 np.percentile(v, 25, 0), np.percentile(v, 75, 0), 
+                plt.fill_between(np.arange(len(np.percentile(v, q_low, 0))),
+                                 np.percentile(v, q_low, 0),
+                                 np.percentile(v, q_high, 0), 
                                  alpha=0.1, color=p[-1].get_color())
                         
     else: # plot all
         for method, setting_dict in methods_settings.items():
             for setting, v in setting_dict.items():                
-                print('{}: {:.2f}% ({:.2f}) {} runs'.format(method, np.mean(accs[method][setting]), 
-                                                            np.std(accs[method][setting]), 
-                                                            len(accs[method][setting])))
-
                 max_len = max([len(a) for a in v])
-                v = [a for a in v if len(a) == max_len]                            
-                #min_len = min([len(a) for a in v])
-                #v = [a[:min_len] for a in v]
+                v = [a for a in v if len(a) == max_len]
+
+                print('{}: {:.2f}% ({:.2f}) {} runs'.format(method,
+                                                            np.mean(accs[method][setting]), 
+                                                            np.std(accs[method][setting]), 
+                                                            len(v)))
+
+                
                 
                 if method2label is None:
                     label = method + '-' + setting
@@ -280,8 +310,9 @@ def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None,
                     label = method2label.get(method,method) + '-' + setting
                 
                 p = plt.plot(np.percentile(v, 50, 0), label=label)
-                plt.fill_between(np.arange(len(np.percentile(v, 25, 0))),
-                                 np.percentile(v, 25, 0), np.percentile(v, 75, 0), 
+                plt.fill_between(np.arange(len(np.percentile(v, q_low, 0))),
+                                 np.percentile(v, q_low, 0),
+                                 np.percentile(v, q_high, 0), 
                                  alpha=0.1, color=p[-1].get_color())                
         
     plt.legend()
