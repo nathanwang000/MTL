@@ -1,9 +1,66 @@
 import torch
 import numpy as np
-import glob
+import glob, tqdm
 from lib.train import Train
 from lib.utils import smooth
 from sklearn.externals import joblib
+from sklearn import metrics
+
+def calc_auroc(y_true, y_predict):
+    return metrics.roc_auc_score(y_true, y_predict)
+
+def calc_auprc(y_true, y_predict):
+    (precisions, recalls, thresholds) = metrics.precision_recall_curve(y_true, y_predict)
+    return metrics.auc(recalls, precisions) 
+
+def test_bootstrap(model, loader, evaluation_function, K=100):
+    # get y and prediction
+    model.eval()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    y_true, y_score = [], []
+    with torch.no_grad():
+        for inputs, targets in tqdm.tqdm(loader):
+            # Get mini-batch inputs and targets
+            # x: (bs, seq_len, d) => (seq_len, bs, d)
+            inputs = inputs.permute(1,0,2)
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+            bs = inputs.size(1)
+            seq_length = inputs.size(0)
+            input_lengths = [seq_length] * bs            
+            
+            # Set initial hidden and cell states
+            states = model.initHidden(batch_size=bs)
+            
+            # Forward pass
+            outputs, states = model(inputs, states, input_lengths)
+            outputs = outputs[-1] # last step (bs, 2)
+            assert outputs.size(1) == 2, "binary only"
+            
+            y_true.extend([t.item() for t in targets])
+            y_score.extend([t.item() for t in torch.nn.functional.softmax(outputs,
+                                                                          1)[:,1]]) 
+    model.train()
+
+    # get a random permuation
+    print("done getting prediction")
+    res = []
+    for _ in tqdm.tqdm(range(K)):
+        indices = np.random.choice(len(y_true), size=len(y_true), replace=True)
+        res.append(evaluation_function(np.array(y_true)[indices],
+                                       np.array(y_score)[indices]))
+    return res
+
+def early_stop_curve(curve, patience=None):
+    # return the index of the early stopping criteria if I were to stop there
+    patience = patience or len(curve) # default to just search the minimum
+    index_list = []
+    min_sofar, min_index = curve[0], 0
+    for i, v in enumerate(curve):
+        if v <= min_sofar and (i - min_index) <= patience:
+            min_sofar, min_index = v, i
+        index_list.append(min_index)
+    return np.array(index_list)
 
 def plot_train_val(patterns, fontsize=15):
     import matplotlib.pyplot as plt
@@ -102,8 +159,11 @@ def plot_train_val_multiple(patterns, colors=['blue', 'orange', 'green', 'red',
         
 def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
                    methods=None, method2label=None, lr=None, start=0, end=-1, 
-                   default_setting=None, ylabel=None, q_low=25, q_high=75):
-    import matplotlib.pyplot as plt        
+                   default_setting=None, ylabel=None, q_low=25, q_high=75,
+                   early_stop=False, early_stop_patience=None):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    sns.set_style("whitegrid")
     assert 'train_losses' in train_pattern, 'train_losses must appear in train_pattern'
     methods_settings = {}
     val_settings = {}
@@ -133,11 +193,17 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
             accs[method][setting] = []
         
         tr_loss = smooth(joblib.load(fn), smooth_window)
-        val_error = smooth(joblib.load(fn.replace('train_losses', 'val_errors')),
-                           smooth_window)
-        test_error = smooth(joblib.load(fn.replace('train_losses', 'test_errors')),
-                            smooth_window)
-        #if len(tr_loss)==10: print(fn)
+
+        val_error = joblib.load(fn.replace('train_losses', 'val_errors'))
+        test_error = joblib.load(fn.replace('train_losses', 'test_errors'))
+        
+        if early_stop:
+            index_list = early_stop_curve(val_error, early_stop_patience)
+            val_error = np.array(val_error)[index_list]
+            test_error = np.array(test_error)[index_list]
+            
+        val_error = smooth(val_error, smooth_window)
+        test_error = smooth(test_error, smooth_window)        
             
         methods_settings[method][setting].append(tr_loss)
         val_settings[method][setting].append(val_error)
@@ -217,13 +283,15 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
     ylabel = ylabel or "error"
     plt.ylabel('test {}'.format(ylabel), fontsize=15)
     plt.xlabel('Epoch', fontsize=15)
-    plt.grid()
+    plt.grid(color='gray', alpha=0.5)
     plt.show()     
 
 def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
               methods=None, method2label=None, lr=None, report_result=False, start=0,
               end=-1, default_setting=None, q_low=25, q_high=75):
-    import matplotlib.pyplot as plt    
+    import matplotlib.pyplot as plt   
+    import seaborn as sns
+    sns.set_style("whitegrid")
     methods_settings = {}
     accs = {}
     for fn in sorted(glob.glob(pattern)):
@@ -322,7 +390,7 @@ def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None,
     plt.xlim(xlim)
     plt.ylabel(pattern.split("*")[-1], fontsize=15)
     plt.xlabel('Epoch', fontsize=15)
-    plt.grid()
+    plt.grid(color='gray', alpha=0.5)
     plt.show()     
     
 # default_setting = {
