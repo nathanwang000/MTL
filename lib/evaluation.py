@@ -158,7 +158,7 @@ def plot_train_val_multiple(patterns, colors=['blue', 'orange', 'green', 'red',
 
         
 def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
-                   methods=None, method2label=None, lr=None, start=0, end=-1, 
+                   methods=None, method2label=None, desired_settings=None, start=0, end=-1, 
                    default_setting=None, ylabel=None, q_low=25, q_high=75,
                    early_stop=False, early_stop_patience=None):
     import matplotlib.pyplot as plt
@@ -174,9 +174,7 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
         method_setting = fn.split('/')[-1].split('^')[0].split('-')
         method, setting = method_setting[0], '-'.join(method_setting[1:])
         
-        method_lr = '-'.join(method_setting[1:3]) \
-                    if method_setting[1] == '1e' else method_setting[1]
-        if lr is not None and lr != float(method_lr):
+        if desired_settings is not None and setting not in desired_settings:
             continue
         if methods is not None and method not in methods:
             continue
@@ -287,7 +285,7 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
     plt.show()     
 
 def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
-              methods=None, method2label=None, lr=None, report_result=False, start=0,
+              methods=None, method2label=None, desired_settings=None, report_result=False, start=0,
               end=-1, default_setting=None, q_low=25, q_high=75):
     import matplotlib.pyplot as plt   
     import seaborn as sns
@@ -298,8 +296,7 @@ def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None,
         method_setting = fn.split('/')[-1].split('^')[0].split('-')
         method, setting = method_setting[0], '-'.join(method_setting[1:])
         
-        method_lr = '-'.join(method_setting[1:3]) if method_setting[1] == '1e' else method_setting[1]
-        if lr is not None and lr != float(method_lr):
+        if desired_settings is not None and setting not in desired_settings:
             continue
         if methods is not None and method not in methods:
             continue

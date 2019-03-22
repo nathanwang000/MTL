@@ -2434,7 +2434,7 @@ class CrossBound(Optimizer):
         self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))
 
     def __setstate__(self, state):
-        super(AdaBound, self).__setstate__(state)
+        super(CrossBound, self).__setstate__(state)
         for group in self.param_groups:
             group.setdefault('amsbound', False)
 
@@ -2478,15 +2478,16 @@ class CrossBound(Optimizer):
                 beta1, beta2 = group['betas']
 
                 state['step'] += 1
-                state['feature_step'] += crossed_zero(exp_avg,
-                                                      exp_avg * beta1 + \
-                                                      (1 - beta1) * grad)
+
+                # old = torch.sign(exp_avg)
+                state['feature_step'].add_(crossed_zero(exp_avg,
+                                                        exp_avg * beta1 + \
+                                                        (1 - beta1) * grad))
 
                 if group['weight_decay'] != 0:
                     grad = grad.add(group['weight_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
-                
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
                 exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
                 if amsbound:
@@ -2497,6 +2498,8 @@ class CrossBound(Optimizer):
                 else:
                     denom = exp_avg_sq.sqrt().add_(group['eps'])
 
+                # state['feature_step'] += (old * exp_avg <= 0).float()
+                
                 bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
@@ -2509,6 +2512,11 @@ class CrossBound(Optimizer):
 
                 step_size = torch.max(torch.min(step_size / denom, upper_bound),
                                       lower_bound) * exp_avg
+                # step_size = torch.full_like(denom, step_size)
+                # step_size.div_(denom)
+                # step_size = torch.max(torch.min(step_size, upper_bound), lower_bound)
+                # step_size.mul_(exp_avg)
+                
                 # step_size = torch.full_like(denom, step_size)
                 # step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
                 p.data.add_(-step_size)
@@ -2842,7 +2850,7 @@ class Swats(Optimizer):
     '''
     switch from Adam to SGD https://arxiv.org/pdf/1712.07628.pdf
     '''
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-9):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-9, weight_decay=0):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -2851,7 +2859,7 @@ class Swats(Optimizer):
             raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        defaults = dict(lr=lr, betas=betas, eps=eps)
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         super(Swats, self).__init__(params, defaults)
         self.SGD = False # SGD phase or not
 
@@ -2888,6 +2896,9 @@ class Swats(Optimizer):
                 beta1, beta2 = group['betas']
                 state['step'] += 1
 
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
+                
                 if self.SGD:
                     state['sgd_m'].mul_(beta1).add_(grad) # note no 1-beta1
                     p.data.add_(-(1-beta1) * state['^'], state['sgd_m'])
