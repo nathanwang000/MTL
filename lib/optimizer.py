@@ -7,6 +7,15 @@ from collections import defaultdict
 def crossed_zero(old, new):
     return (old * new <= 0).float()
 
+def reset_grad(optimizer): # not zero_grad as in optimizer default
+    # refresh gradient at each epoch
+    for group in optimizer.param_groups:        
+        for p in group['params']:
+            if p.grad is None:
+                continue
+            state = optimizer.state[p]
+            state['grad'] = torch.zeros_like(p.data)
+
 class dSGD(Optimizer): # per dimension SGD
     r"""Implements stochastic gradient descent (optionally with momentum).
 
@@ -73,7 +82,7 @@ class dSGD(Optimizer): # per dimension SGD
         for group in self.param_groups:
             group.setdefault('nesterov', False)
 
-    def step(self, closure=None):
+    def step(self, closure=None, update=True):
         """Performs a single optimization step.
 
         Arguments:
@@ -99,6 +108,10 @@ class dSGD(Optimizer): # per dimension SGD
                 if len(state) == 0:
                     state['lr'] = torch.ones_like(p.data) * group["lr"]
                     state['grad'] = torch.zeros_like(p.data)
+
+                state['grad'] += p.grad.data                    
+                if not update:
+                    continue
                 
                 d_p = p.grad.data
                 if weight_decay != 0:
@@ -118,7 +131,6 @@ class dSGD(Optimizer): # per dimension SGD
 
                 # p.data.add_(-group['lr'], d_p)
                 p.data.add_(-state['lr'] * d_p)
-                state['grad'] += d_p
 
         return loss
 
@@ -2478,8 +2490,8 @@ class AdaBound(Optimizer):
 
                 state['step'] += 1
 
-                if group['weight_decay'] != 0:
-                    grad = grad.add(group['weight_decay'], p.data)
+                # if group['weight_decay'] != 0:
+                #     grad = grad.add(group['weight_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -2505,7 +2517,11 @@ class AdaBound(Optimizer):
                 step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
                 state['alpha_ratio'] = torch.ones_like(p.data) * \
                                        (1-1/(group['gamma']*state['step']+1))
-                
+
+                # proper weight decay
+                if group['weight_decay'] != 0:
+                    step_size.add_(group['weight_decay'], p.data)
+                    
                 p.data.add_(-step_size)
 
         return loss
@@ -2579,7 +2595,7 @@ class CrossBound(Optimizer):
                 # State initialization
                 if len(state) == 0:
                     state['step'] = 0
-                    state['feature_step'] = torch.zeros_like(p.data)
+                    state['feature_step'] = torch.zeros_like(p.data) 
                     # Exponential moving average of gradient values
                     state['exp_avg'] = torch.zeros_like(p.data)
                     # Exponential moving average of squared gradient values
@@ -2600,8 +2616,8 @@ class CrossBound(Optimizer):
                                                         exp_avg * beta1 + \
                                                         (1 - beta1) * grad))
 
-                if group['weight_decay'] != 0:
-                    grad = grad.add(group['weight_decay'], p.data)
+                # if group['weight_decay'] != 0:
+                #     grad = grad.add(group['weight_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -2625,7 +2641,6 @@ class CrossBound(Optimizer):
                 final_lr = group['final_lr'] * group['lr'] / base_lr
                 lower_bound = final_lr * (1 - 1 / (group['gamma'] * state['feature_step'] + 1))
                 upper_bound = final_lr * (1 + 1 / (group['gamma'] * state['feature_step']))
-
                 step_size = torch.max(torch.min(step_size / denom, upper_bound),
                                       lower_bound) * exp_avg
                 # step_size = torch.full_like(denom, step_size)
@@ -2635,7 +2650,12 @@ class CrossBound(Optimizer):
                 
                 # step_size = torch.full_like(denom, step_size)
                 # step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
-                p.data.add_(-step_size)
+
+                # proper weight decay
+                if group['weight_decay'] != 0:
+                    step_size.add_(group['weight_decay'], p.data)
+                
+                p.data.add_(-step_size) 
                 state['alpha_ratio'] = 1-1/(group['gamma']*state['feature_step']+1)
                 
         return loss
@@ -2736,8 +2756,8 @@ class CrossAdaBound(Optimizer):
                 state['feature_step'] = torch.max(torch.zeros_like(p.data),
                                                   state['feature_step'])
 
-                if group['weight_decay'] != 0:
-                    grad = grad.add(group['weight_decay'], p.data)
+                # if group['weight_decay'] != 0:
+                #     grad = grad.add(group['weight_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -2767,6 +2787,11 @@ class CrossAdaBound(Optimizer):
 
                 # how much sgd it is
                 state['alpha_ratio'] = 1-1/(group['gamma']*state['feature_step']+1)
+
+                # proper weight decay
+                if group['weight_decay'] != 0:
+                    step_size.add_(group['weight_decay'], p.data)
+                
                 p.data.add_(-step_size)
 
         return loss
@@ -3012,8 +3037,8 @@ class Swats(Optimizer):
                 beta1, beta2 = group['betas']
                 state['step'] += 1
 
-                if group['weight_decay'] != 0:
-                    grad = grad.add(group['weight_decay'], p.data)
+                # if group['weight_decay'] != 0:
+                #     grad = grad.add(group['weight_decay'], p.data)
                 
                 if self.SGD:
                     state['sgd_m'].mul_(beta1).add_(grad) # note no 1-beta1
@@ -3031,6 +3056,11 @@ class Swats(Optimizer):
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
                 pk = -step_size * exp_avg / denom
+
+                # proper weight decay
+                if group['weight_decay'] != 0:
+                    pk.add_(-group['weight_decay'], p.data)
+                
                 p.data.add_(pk)
                 #p.data.addcdiv_(-step_size, exp_avg, denom)
                 state['alpha_ratio'] = torch.zeros_like(p.data)
@@ -3045,114 +3075,6 @@ class Swats(Optimizer):
                        torch.abs(lr_stability) < group['eps']:
                         self.SGD = True
                         state['^'] = state['sgd_lr'] / bias_correction2
-        return loss
-
-class CrossBound2(Optimizer):
-    """
-    CrossBound but lower bound to have final learning rate
-    """
-
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), final_lr=0.1, gamma=1e-3,
-                 eps=1e-8, weight_decay=0, amsbound=False):
-        if not 0.0 <= lr:
-            raise ValueError("Invalid learning rate: {}".format(lr))
-        if not 0.0 <= eps:
-            raise ValueError("Invalid epsilon value: {}".format(eps))
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        if not 0.0 <= final_lr:
-            raise ValueError("Invalid final learning rate: {}".format(final_lr))
-        if not 0.0 <= gamma < 1.0:
-            raise ValueError("Invalid gamma parameter: {}".format(gamma))
-        defaults = dict(lr=lr, betas=betas, final_lr=final_lr, gamma=gamma, eps=eps,
-                        weight_decay=weight_decay, amsbound=amsbound)
-        super(CrossBound2, self).__init__(params, defaults)
-
-        self.base_lrs = list(map(lambda group: group['lr'], self.param_groups))
-
-    def __setstate__(self, state):
-        super(CrossBound2, self).__setstate__(state)
-        for group in self.param_groups:
-            group.setdefault('amsbound', False)
-
-    def step(self, closure=None):
-        """Performs a single optimization step.
-        Arguments:
-            closure (callable, optional): A closure that reevaluates the model
-                and returns the loss.
-        """
-        loss = None
-        if closure is not None:
-            loss = closure()
-
-        for group, base_lr in zip(self.param_groups, self.base_lrs):
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                grad = p.grad.data
-                if grad.is_sparse:
-                    raise RuntimeError(
-                        'Adam does not support sparse gradients, please consider SparseAdam instead')
-                amsbound = group['amsbound']
-
-                state = self.state[p]
-
-                # State initialization
-                if len(state) == 0:
-                    state['step'] = 0
-                    state['feature_step'] = torch.zeros_like(p.data)
-                    # Exponential moving average of gradient values
-                    state['exp_avg'] = torch.zeros_like(p.data)
-                    # Exponential moving average of squared gradient values
-                    state['exp_avg_sq'] = torch.zeros_like(p.data)
-                    if amsbound:
-                        # Maintains max of all exp. moving avg. of sq. grad. values
-                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
-
-                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
-                if amsbound:
-                    max_exp_avg_sq = state['max_exp_avg_sq']
-                beta1, beta2 = group['betas']
-
-                state['step'] += 1
-                state['feature_step'] += crossed_zero(exp_avg,
-                                                      exp_avg * beta1 + \
-                                                      (1 - beta1) * grad)
-
-                if group['weight_decay'] != 0:
-                    grad = grad.add(group['weight_decay'], p.data)
-
-                # Decay the first and second moment running average coefficient
-                
-                exp_avg.mul_(beta1).add_(1 - beta1, grad)
-                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
-                if amsbound:
-                    # Maintains the maximum of all 2nd moment running avg. till now
-                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
-                    # Use the max. for normalizing running avg. of gradient
-                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
-                else:
-                    denom = exp_avg_sq.sqrt().add_(group['eps'])
-
-                bias_correction1 = 1 - beta1 ** state['step']
-                bias_correction2 = 1 - beta2 ** state['step']
-                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
-
-                # Applies bounds on actual learning rate
-                # lr_scheduler cannot affect final_lr, this is a workaround to apply lr decay
-                final_lr = group['final_lr'] * group['lr'] / base_lr
-                upper_bound = final_lr * (1 + 1 / (group['gamma'] * state['feature_step']))
-                lower_bound = final_lr * torch.ones_like(upper_bound)
-
-                step_size = torch.max(torch.min(step_size / denom, upper_bound),
-                                      lower_bound) * exp_avg
-                # step_size = torch.full_like(denom, step_size)
-                # step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
-                p.data.add_(-step_size)
-                state['alpha_ratio'] = 1-1/(group['gamma']*state['feature_step']+1)
-                
         return loss
     
 ######################### learning rate adjusting ########################
@@ -3173,32 +3095,135 @@ class LR_schedule_fixed():
         self.use_cross_zero = use_cross_zero
         
     def adjust_learning_rate(self, optimizer, epoch):
+        
         # update cross_zero
+        if self.use_cross_zero:        
+            max_step = 0
+            min_step = epoch + 1
+            for group in optimizer.param_groups:
+                for p in group['params']:
+                    if p.grad is None:
+                        continue
+
+                    state = optimizer.state[p]
+                    assert 'grad' in state and 'lr' in state, "must have grad and lr"  
+                    if self.old_grad.get(p) is not None:
+                        # print(self.old_grad[p].view(-1)[0], state['grad'].view(-1)[0])
+                        self.feature_step[p] += crossed_zero(self.old_grad[p], state['grad'])
+                        max_step = max(torch.max(self.feature_step[p]).item(), max_step)
+                        min_step = min(torch.min(self.feature_step[p]).item(), min_step)
+
+                    self.old_grad[p] = state['grad'].data.clone()
+
+        # print("max min", max_step, min(min_step, max_step))
+        # set learning rate for each parameter separately
+        if epoch in self.schedule:
+            for group in optimizer.param_groups:
+
+                group['lr'] *= self.gamma
+                
+                if self.use_cross_zero:                
+                    for p in group['params']:
+                        if p.grad is None:
+                            continue
+
+                        if self.feature_step[p] is 0 or max_step == 0:
+                            continue
+                        # self.lr[p][self.feature_step[p] > 0] *= self.gamma
+                        decay_rate = 1 / (1 + self.feature_step[p] / max_step * \
+                                          (1 / self.gamma - 1))
+                        self.lr[p] *=  decay_rate
+
+                    state = optimizer.state[p]
+                    state['lr'] = self.lr[p]
+
+            if self.use_cross_zero: # refresh
+                self.feature_step = defaultdict(int)
+                # print("feature step reset to 0")
+
+        # refresh gradient at each epoch
+        if self.use_cross_zero:
+            reset_grad(optimizer)
+
+class LR_reduce_validation(): # reduce learning rate based on validation
+
+    def __init__(self, lr, gamma, optimizer, use_cross_zero=True, use_max=False,
+
+                 patience=10):
+        # use_max signals whether or not higher value is better
+        # default false
+        self.use_max = use_max
+        self.patience = patience
+        
+        self.lr = {}
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                self.lr[p] = torch.ones_like(p.data) * lr
+
+        self.init_lr = lr
+        self.gamma = gamma
+        self.old_grad = {}
+        self.feature_step = defaultdict(int)
+        self.use_cross_zero = use_cross_zero
+
+        self.best_so_far = None
+        self.best_streak = 0
+
+    def decay_or_not(self, performance):
+        if not self.use_max:
+            performance = -performance
+            
+        if self.best_so_far is None or performance > self.best_so_far:
+            #print(self.best_so_far)
+            self.best_so_far = performance
+            self.best_streak = 0
+        else:
+            self.best_streak += 1
+
+        decay = self.best_streak >= self.patience
+        if decay:
+            self.best_streak = 0
+        return decay
+    
+    def adjust_learning_rate(self, optimizer, validation_performance):
+        # note: use validation gradient
+        # update cross_zero
+        max_step = 0
         for group in optimizer.param_groups:
             for p in group['params']:
                 if p.grad is None:
                     continue
 
                 state = optimizer.state[p]
+                assert 'grad' in state and 'lr' in state, "must have grad and lr"
                 if self.old_grad.get(p) is not None:
                     self.feature_step[p] += crossed_zero(self.old_grad[p], state['grad'])
-                else:
-                    self.old_grad[p] = state['grad'].clone()
+                    max_step = max(torch.max(self.feature_step[p]).item(), max_step)
+
+                self.old_grad[p] = state['grad'].data.clone()
         
         # set learning rate for each parameter separately
-        if epoch in self.schedule:
+        if self.decay_or_not(validation_performance):
             for group in optimizer.param_groups:
                 for p in group['params']:
                     if p.grad is None:
                         continue
 
                     if self.use_cross_zero:
-                        self.lr[p] *= (self.feature_step[p] > 0).float() * self.gamma
+                        if self.feature_step[p] is 0 or max_step == 0:
+                            continue
+                        # self.lr[p][self.feature_step[p] > 0] *= self.gamma
+                        decay_rate = 1 / (1 + self.feature_step[p] / max_step * \
+                                          (1 / self.gamma - 1))
+                        self.lr[p] *=  decay_rate
                     else:
                         self.lr[p] *= self.gamma 
                     state = optimizer.state[p]
                     state['lr'] = self.lr[p]
 
             if self.use_cross_zero: # refresh
-                self.feature_step = defautdict(int)
-        
+                self.feature_step = defaultdict(int)
+
+        # refresh gradient at each epoch
+        reset_grad(optimizer)
+                

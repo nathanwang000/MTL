@@ -61,12 +61,17 @@ class OptRecorder(object):
                 else:
                     f = np.ones_like(g)
 
+                if 'lr' in state:
+                    lr = state['lr'].cpu().detach().numpy().ravel()
+                else:
+                    lr = np.ones_like(g) * group['lr']
+                    
                 for i, index in enumerate(self.index[param]):
                     self.tracker[ind]['grad'][i].append(g[index])
                     self.tracker[ind]['param'][i].append(p[index])                    
                     self.tracker[ind]['alpha_ratio'][i].append(a[index])
                     self.tracker[ind]['feature_step'][i].append(f[index])
-                    self.tracker[ind]['lr'][i].append(group['lr'])   
+                    self.tracker[ind]['lr'][i].append(lr[index])   
                 ind += 1
 
 class AverageMeter(object):
