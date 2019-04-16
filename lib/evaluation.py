@@ -159,7 +159,7 @@ def plot_train_val_multiple(patterns, colors=['blue', 'orange', 'green', 'red',
         
 def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
                    methods=None, method2label=None, desired_settings=None, start=0, end=-1, 
-                   default_setting=None, ylabel=None, q_low=25, q_high=75,
+                   default_setting=None, ylabel=None, xlabel=None, q_low=25, q_high=75,
                    early_stop=False, early_stop_patience=None):
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -279,13 +279,15 @@ def plot_best_test(train_pattern, smooth_window=1, title=None, ylim=None, xlim=N
     plt.ylim(ylim)
     plt.xlim(xlim)
     ylabel = ylabel or "error"
+    xlabel = xlabel or "Epoch"
     plt.ylabel('test {}'.format(ylabel), fontsize=15)
-    plt.xlabel('Epoch', fontsize=15)
+    plt.xlabel(xlabel, fontsize=15)
     plt.grid(color='gray', alpha=0.5)
     plt.show()     
 
 def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None, 
               methods=None, method2label=None, desired_settings=None, report_result=False, start=0,
+              xlabel=None, ylabel=None,
               end=-1, default_setting=None, q_low=25, q_high=75):
     import matplotlib.pyplot as plt   
     import seaborn as sns
@@ -385,8 +387,10 @@ def plot_best(pattern, smooth_window=1, title=None, ylim=None, xlim=None,
         plt.title(title, fontsize=15)
     plt.ylim(ylim)
     plt.xlim(xlim)
-    plt.ylabel(pattern.split("*")[-1], fontsize=15)
-    plt.xlabel('Epoch', fontsize=15)
+    ylabel = ylabel or pattern.split("*")[-1]
+    xlabel = xlabel or "Epoch"
+    plt.ylabel(ylabel, fontsize=15)
+    plt.xlabel(xlabel, fontsize=15)
     plt.grid(color='gray', alpha=0.5)
     plt.show()     
     

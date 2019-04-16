@@ -2490,8 +2490,8 @@ class AdaBound(Optimizer):
 
                 state['step'] += 1
 
-                # if group['weight_decay'] != 0:
-                #     grad = grad.add(group['weight_decay'], p.data)
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -2519,8 +2519,8 @@ class AdaBound(Optimizer):
                                        (1-1/(group['gamma']*state['step']+1))
 
                 # proper weight decay
-                if group['weight_decay'] != 0:
-                    step_size.add_(group['weight_decay'], p.data)
+                # if group['weight_decay'] != 0:
+                #     step_size.add_(group['weight_decay'], p.data)
                     
                 p.data.add_(-step_size)
 
@@ -2616,8 +2616,8 @@ class CrossBound(Optimizer):
                                                         exp_avg * beta1 + \
                                                         (1 - beta1) * grad))
 
-                # if group['weight_decay'] != 0:
-                #     grad = grad.add(group['weight_decay'], p.data)
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -2652,8 +2652,8 @@ class CrossBound(Optimizer):
                 # step_size.div_(denom).clamp_(lower_bound, upper_bound).mul_(exp_avg)
 
                 # proper weight decay
-                if group['weight_decay'] != 0:
-                    step_size.add_(group['weight_decay'], p.data)
+                # if group['weight_decay'] != 0:
+                #     step_size.add_(group['weight_decay'], p.data)
                 
                 p.data.add_(-step_size) 
                 state['alpha_ratio'] = 1-1/(group['gamma']*state['feature_step']+1)
