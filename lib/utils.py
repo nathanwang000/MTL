@@ -2,7 +2,7 @@ import time, math, torch, shutil, glob
 import numpy as np
 import os
 import random, string, os
-import glob
+import glob, copy
 
 def random_string(N=5):
     return ''.join(random.choice(string.ascii_uppercase + string.digits)
@@ -21,12 +21,15 @@ def to_cuda(x):
 
 class OptRecorder(object):
     """collect items in optimizer"""
-    def __init__(self, optimizer, n=10):
+    def __init__(self, optimizer, n=10, model=None):
+        if model is not None:
+            self.w0 = copy.deepcopy(model.state_dict())
+            
         self.opt = optimizer
         self.n = n # number of tracked parameters
         # randomly choose n parameters for each layer
         self.index = {}
-        self.tracker = [] 
+        self.tracker = []
 
         for group in optimizer.param_groups:
             for p in group['params']:
@@ -41,8 +44,23 @@ class OptRecorder(object):
                     "lr": [[] for _ in range(ntrack)],         
                 })
 
-    def record(self):
+        # last item of tracker keeps track of global properties
+        if model is not None:
+            self.tracker.append({"l2(w-w0)": [], "l2(w)": []})
+
+    def record(self, model=None):
         ind = 0
+        if model is not None:
+            self.tracker[-1]["l2(w-w0)"].append(0)
+            self.tracker[-1]["l2(w)"].append(0)
+            w = model.state_dict()
+            for k in w.keys():
+                self.tracker[-1]["l2(w-w0)"][-1]+=torch.sum((w[k]-self.w0[k])**2).item()
+                self.tracker[-1]["l2(w)"][-1] += torch.sum(w[k]**2).item()
+
+            self.tracker[-1]["l2(w-w0)"][-1] = np.sqrt(self.tracker[-1]["l2(w-w0)"][-1])
+            self.tracker[-1]["l2(w)"][-1] = np.sqrt(self.tracker[-1]["l2(w)"][-1])
+
         for group in self.opt.param_groups:
             for param in group['params']:
                 state = self.opt.state[param]
