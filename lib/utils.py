@@ -46,25 +46,30 @@ class OptRecorder(object):
         for group in self.opt.param_groups:
             for param in group['params']:
                 state = self.opt.state[param]
-                g = param.grad.data.cpu().detach().numpy().ravel()
+
                 p = param.data.cpu().detach().numpy().ravel()
 
+                if param.grad is not None:
+                    g = param.grad.data.cpu().detach().numpy().ravel()
+                else:
+                    g = np.ones_like(p)
+                    
                 if 'alpha_ratio' in state:
                     a = state['alpha_ratio'].cpu().detach().numpy().ravel()
                 else:
-                    a = np.ones_like(g)
+                    a = np.ones_like(p)
 
                 if 'feature_step' in state:
                     f = state['feature_step'].cpu().detach().numpy().ravel()
                 elif 'step' in state:
-                    f = np.ones_like(g) * state['step']
+                    f = np.ones_like(p) * state['step']
                 else:
-                    f = np.ones_like(g)
+                    f = np.ones_like(p)
 
                 if 'lr' in state:
                     lr = state['lr'].cpu().detach().numpy().ravel()
                 else:
-                    lr = np.ones_like(g) * group['lr']
+                    lr = np.ones_like(p) * group['lr']
                     
                 for i, index in enumerate(self.index[param]):
                     self.tracker[ind]['grad'][i].append(g[index])
