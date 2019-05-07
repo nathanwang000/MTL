@@ -15,28 +15,32 @@ parser.add_argument('-k', type=int, default=0,
                     help='condition number in log scale')
 parser.add_argument('-lm', type=int, default=0,
                     help='lambda max in log scale')
-parser.add_argument('-d', type=int, help='dimension', default=100)
+#parser.add_argument('-d', type=int, help='dimension', default=100)
 parser.add_argument('-s', type=int, help='seed', default=0)
-parser.add_argument('-savedir', type=str, help='dir to save', default='result:0.01')
+parser.add_argument('-savedir', type=str, help='dir to save', default='angle_result')
+parser.add_argument('-angle', type=float, help='angle in degree', default=0)
 args = parser.parse_args()
 
 os.system('mkdir -p {}'.format(args.savedir))
 opt_path = OptPath(max_iter=args.max_iter)
 k = 10 ** args.k
 lambda_max = 10 ** args.lm
-d = args.d
+d = 2
 seed = args.s
 
 # generate the problem
 np.random.seed(seed)
+angle = args.angle / 180 * np.pi # convert to radian
+Q = np.array([[np.cos(angle), -np.sin(angle)],
+              [np.sin(angle), np.cos(angle)]])
 criteria, Q, Lambda = gen_quadratic_loss(d, lambda_max / k, lambda_max,
-                                         logscale=True)
+                                         logscale=True, Q=Q)
 x0 = np.random.uniform(2, 10, d)
 
 # set optimizers
 opt_settings = {
-    'Adam': {'opt': torch.optim.Adam,  'lr': 0.01},
-    'AdaSGD': {'opt': optimizers.AdaSGD,  'lr': 0.01, 'momentum': 0.9},
+    'Adam': {'opt': torch.optim.Adam,  'lr': 0.1},
+    'AdaSGD': {'opt': optimizers.AdaSGD,  'lr': 0.1, 'momentum': 0.9},
     'SGD': {'opt': torch.optim.SGD, 'lr': 0.01, 'momentum': 0.9},        
     'OptSGD': {'opt': torch.optim.SGD, 'lr': 1/lambda_max, 'momentum': 0.9},
     'AdjustSGD': {'opt': torch.optim.SGD, 'lr': 1e-10, 'momentum': 0.9,
@@ -47,7 +51,7 @@ for name in opt_settings:
     opt_path.get_path(criteria, x0, **opt_settings[name])
     to_save = opt_settings[name]
     to_save['loss'] = opt_path.get_loss()
-    joblib.dump(to_save, '{}/{}:{}:{}:{}'.format(
-        args.savedir, name, k, lambda_max, seed))
+    joblib.dump(to_save, '{}/{}:{}:{}:{}:{}'.format(
+        args.savedir, name, k, lambda_max, seed, args.angle))
 
 

@@ -102,9 +102,10 @@ class OptPath():
         return [self.criteria(torch.from_numpy(x).view(1, -1).float()).item() for
                 x in self.x_path]
 
-def gen_quadratic_loss(d=10, lambda_min=1, lambda_max=1, logscale=False):
+def gen_quadratic_loss(d=10, lambda_min=1, lambda_max=1, logscale=False, Q=None):
     '''generate quadratic loss for synthetic data'''
-    Q = ortho_group.rvs(d)
+    if Q is None:
+        Q = ortho_group.rvs(d)
     if not logscale:
         Lambda = np.linspace(lambda_min, lambda_max, d)
     else:
