@@ -3,6 +3,8 @@ import numpy as np
 import os
 import random, string, os
 import glob, copy
+import Optimizer.lib.optimizer as optimizers
+from scipy.stats import ortho_group
 
 def crossed_zero(old, new):
     return (old * new <= 0).float()
@@ -48,6 +50,101 @@ class CrossZeroTracker(object):
                                                            + (1-self.beta1)*grad)).item()
                 exp_avg.mul_(self.beta1).add_(1 - self.beta1, grad)
         
+class OptPath():
+    def __init__(self, max_iter=1000, tol=1e-6):
+        self.max_iter = max_iter
+        self.tol = tol
+        
+    def get_path(self, criteria, x0, lr=1e-3, opt=torch.optim.SGD, sgd_adjust=False,
+                 schedule=None, decay_rate=0.1, crosszero=False, record=False, **kwargs):
+        self.lr = lr
+        self.kwargs = kwargs
+        self.schedule = schedule
+        self.decay_rate = decay_rate
+        self.crosszero = crosszero
+        self.criteria = criteria
+        self.validation_decay = schedule is not None and 0 in schedule
+        
+        x_path = [x0]
+        x = torch.nn.Parameter(torch.from_numpy(x0).float().view(1, -1))
+        optimizer = opt([x], lr=lr, **kwargs)
+        self.opt = optimizer
+        self.opt_recorder = OptRecorder(optimizer)
+        if sgd_adjust: self.sgd_adjuster = optimizers.SGD_adjust(self.opt)
+        
+        if schedule is not None:
+            if self.validation_decay:
+                self.lr_decay = torch.optim.lr_scheduler.\
+                                ReduceLROnPlateau(optimizer, mode='min',
+                                                  factor=decay_rate,
+                                                  patience=10, cooldown=100)
+            else:
+                self.lr_decay = torch.optim.lr_scheduler.MultiStepLR(optimizer,
+                                                                     schedule,
+                                                                     gamma=decay_rate)
+            
+        for i in range(self.max_iter):
+            optimizer.zero_grad()
+            l = criteria(x)
+            l.backward()
+            if sgd_adjust: self.sgd_adjuster.step(l.data.item())
+            optimizer.step()
+
+            x_path.append(x.data.cpu().clone().numpy().ravel())
+            if schedule is not None:
+                if self.validation_decay:
+                    self.lr_decay.step(l.data.item())
+                else:
+                    self.lr_decay.step()
+                    
+            if record:
+                self.opt_recorder.record()
+        
+        x_path = np.vstack(x_path)
+        self.x_path = x_path
+        
+    def get_converge_time(self, tol=None):
+        if tol is None: tol = self.tol
+        # definition of converge here is after certain iterations,
+        # the distance to 0 is smaller than tol
+        t = len(self.x_path)
+        for i, pt in enumerate(self.x_path[::-1]):
+            l = np.linalg.norm(pt)
+            if np.isnan(l):
+                return len(self.x_path)
+            if l > tol:
+                return len(self.x_path) - i
+        return 0
+    
+    def get_loss_time(self, tol=None):
+        if tol is None: tol = self.tol
+        t = len(self.x_path)
+        for i, pt in enumerate(self.x_path[::-1]):
+            l = self.criteria(torch.from_numpy(pt).view(1, -1).float()).item()
+            if np.isnan(l):
+                return len(self.x_path) * 2
+            if l > tol:
+                return len(self.x_path) - i
+        return 0
+
+    def get_loss(self):
+        return [self.criteria(torch.from_numpy(x).view(1, -1).float()).item() for
+                x in self.x_path]
+
+def gen_quadratic_loss(d=10, lambda_min=1, lambda_max=1, logscale=False):
+    '''generate quadratic loss for synthetic data'''
+    Q = ortho_group.rvs(d)
+    if not logscale:
+        Lambda = np.linspace(lambda_min, lambda_max, d)
+    else:
+        Lambda = np.logspace(np.log10(lambda_min), np.log10(lambda_max), d)
+    A = torch.from_numpy(Q.T.dot(np.diag(Lambda)).dot(Q)).float()
+    # x is n by d
+    def res(x):
+        return 0.5 * (x.mm(A) * x).sum(1)
+    
+    return res, Q, Lambda
+
 class OptRecorder(object):
     """collect items in optimizer"""
     def __init__(self, optimizer, n=10, model=None):
@@ -64,7 +161,10 @@ class OptRecorder(object):
             for p in group['params']:
                 length = len(p.data.cpu().detach().numpy().ravel())
                 ntrack = min(n, length)
-                self.index[p] = np.random.choice(range(length), ntrack, replace=False)
+                if n >= length:
+                    self.index[p] = list(range(length))
+                else:
+                    self.index[p] = np.random.choice(range(length), ntrack, replace=False)
                 self.tracker.append({
                     "grad": [[] for _ in range(ntrack)],
                     "param": [[] for _ in range(ntrack)],

@@ -1,7 +1,7 @@
 import torch
 from torch.optim import Optimizer
 from torch.optim.optimizer import required
-import math
+import math, copy
 from collections import defaultdict
 
 def crossed_zero(old, new):
@@ -16,52 +16,102 @@ def reset_grad(optimizer): # not zero_grad as in optimizer default
             state = optimizer.state[p]
             state['grad'] = torch.zeros_like(p.data)
 
+class AdaSGD(Optimizer): # per dimension SGD
+    def __init__(self, params, lr=required, momentum=0, dampening=0,
+                 weight_decay=0, nesterov=False, beta=0.999, eps=1e-9, amsgrad=False):
+        if lr is not required and lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if momentum < 0.0:
+            raise ValueError("Invalid momentum value: {}".format(momentum))
+        if weight_decay < 0.0:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
+                        weight_decay=weight_decay, nesterov=nesterov,
+                        beta=beta, eps=eps, amsgrad=amsgrad)
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        super(AdaSGD, self).__init__(params, defaults)
+
+        self.w_sq = 0 # weight squared divided by d
+        self.max_w_sq = 0
+        self.beta = beta
+        self.step_ = 0        
+
+    def __setstate__(self, state):
+        super(AdaSGD, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+            group.setdefault('amsgrad', False)
+            
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        # calculate norm of the vector
+        w_sq = 0
+        d = 0
+        self.step_ += 1
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                if weight_decay != 0:
+                    grad += weight_decay * p.data
+                w_sq += (grad**2).sum()
+                d += grad.numel()
+                
+        self.w_sq = self.w_sq * self.beta + (1-self.beta) * (w_sq / d)
+
+        # actual update
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+            amsgrad = group['amsgrad']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                d_p = p.grad.data
+                if weight_decay != 0:
+                    d_p.add_(weight_decay, p.data)
+                if momentum != 0:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                        buf.mul_(momentum).add_(d_p)
+                    else:
+                        buf = param_state['momentum_buffer']
+                        buf.mul_(momentum).add_(1 - dampening, d_p)
+                    if nesterov:
+                        d_p = d_p.add(momentum, buf)
+                    else:
+                        d_p = buf
+
+                bias_correction = 1 - self.beta ** self.step_
+                if amsgrad:
+                    if type(self.max_w_sq) is int:
+                        self.max_w_sq = copy.deepcopy(self.w_sq)
+                    else:
+                        self.max_w_sq = torch.max(self.max_w_sq, self.w_sq)
+                    denom = self.max_w_sq.sqrt() + group['eps']
+                else:
+                    denom = self.w_sq.sqrt() + group['eps']
+
+                denom /= math.sqrt(bias_correction)
+                p.data.addcdiv_(-group['lr'], d_p, denom)
+                #p.data.add_(-group['lr'], d_p) # old                
+
+        return loss
+            
 class dSGD(Optimizer): # per dimension SGD
-    r"""Implements stochastic gradient descent (optionally with momentum).
-
-    Nesterov momentum is based on the formula from
-    `On the importance of initialization and momentum in deep learning`__.
-
-    Args:
-        params (iterable): iterable of parameters to optimize or dicts defining
-            parameter groups
-        lr (float): learning rate
-        momentum (float, optional): momentum factor (default: 0)
-        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
-        dampening (float, optional): dampening for momentum (default: 0)
-        nesterov (bool, optional): enables Nesterov momentum (default: False)
-
-    Example:
-        >>> optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-        >>> optimizer.zero_grad()
-        >>> loss_fn(model(input), target).backward()
-        >>> optimizer.step()
-
-    __ http://www.cs.toronto.edu/%7Ehinton/absps/momentum.pdf
-
-    .. note::
-        The implementation of SGD with Momentum/Nesterov subtly differs from
-        Sutskever et. al. and implementations in some other frameworks.
-
-        Considering the specific case of Momentum, the update can be written as
-
-        .. math::
-                  v = \rho * v + g \\
-                  p = p - lr * v
-
-        where p, g, v and :math:`\rho` denote the parameters, gradient,
-        velocity, and momentum respectively.
-
-        This is in contrast to Sutskever et. al. and
-        other frameworks which employ an update of the form
-
-        .. math::
-             v = \rho * v + lr * g \\
-             p = p - v
-
-        The Nesterov version is analogously modified.
-    """
-
     def __init__(self, params, lr=required, momentum=0, dampening=0,
                  weight_decay=0, nesterov=False):
         if lr is not required and lr < 0.0:
@@ -2991,7 +3041,8 @@ class Swats(Optimizer):
     '''
     switch from Adam to SGD https://arxiv.org/pdf/1712.07628.pdf
     '''
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-9, weight_decay=0):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-9, weight_decay=0,
+                 amsgrad=False):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -3000,9 +3051,11 @@ class Swats(Optimizer):
             raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
         if not 0.0 <= betas[1] < 1.0:
             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay,
+                        amsgrad=amsgrad)
         super(Swats, self).__init__(params, defaults)
         self.SGD = False # SGD phase or not
+        self.sgd_time = 0
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -3011,6 +3064,7 @@ class Swats(Optimizer):
             closure (callable, optional): A closure that reevaluates the model
                 and returns the loss.
         """
+        if not self.SGD: self.sgd_time += 1
         loss = None
         if closure is not None:
             loss = closure()
@@ -3021,7 +3075,8 @@ class Swats(Optimizer):
                     continue
                 grad = p.grad.data
                 state = self.state[p]
-
+                amsgrad = group['amsgrad']
+                
                 # State initialization
                 if len(state) == 0:
                     state['step'] = 0
@@ -3033,13 +3088,20 @@ class Swats(Optimizer):
                     # Exponential moving average of squared difference in gradient values
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
 
+                    if amsgrad:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsgrad:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
                 beta1, beta2 = group['betas']
+
                 state['step'] += 1
 
-                # if group['weight_decay'] != 0:
-                #     grad = grad.add(group['weight_decay'], p.data)
-                
+                if group['weight_decay'] != 0:
+                    grad.add_(group['weight_decay'], p.data)
+
                 if self.SGD:
                     state['sgd_m'].mul_(beta1).add_(grad) # note no 1-beta1
                     p.data.add_(-(1-beta1) * state['^'], state['sgd_m'])
@@ -3048,19 +3110,20 @@ class Swats(Optimizer):
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
-                exp_avg_sq.mul_(beta2).add_(1 - beta2, grad**2)
-                denom = exp_avg_sq.sqrt().add_(group['eps']) 
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsgrad:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps']) 
 
                 bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
                 pk = -step_size * exp_avg / denom
-
-                # proper weight decay
-                if group['weight_decay'] != 0:
-                    pk.add_(-group['weight_decay'], p.data)
-                
                 p.data.add_(pk)
                 #p.data.addcdiv_(-step_size, exp_avg, denom)
                 state['alpha_ratio'] = torch.zeros_like(p.data)
@@ -3076,7 +3139,76 @@ class Swats(Optimizer):
                         self.SGD = True
                         state['^'] = state['sgd_lr'] / bias_correction2
         return loss
-    
+
+class SGD_adjust():
+    ''' 
+    warm is number of periods to warm up to div * lr from lr with linear rate
+    '''
+    def __init__(self, opt, div=4, warm=500, patience=10):
+        if 'SGD' not in opt.__class__.__name__:
+            raise ValueError("Invalid optimizer, must be SGD variants")
+        if div < 2:
+            raise ValueError("Divided number must be >= 2: now is {}".format(div))
+        
+        self.opt = opt
+        self.div = div
+        self.warm = warm
+        self.patience = patience
+
+        self.beta = 1 - 1/patience
+        self.step_ = 0
+        self.n_higher = 0
+        self.l_mean = None
+        self.new_l_mean = None
+        self.l0 = 0
+        self.base_lrs = list(map(lambda group: group['lr'], opt.param_groups))
+
+        self.lrs = []
+        self.nhighers = []
+        self.ls = []
+
+    def diverge(self, l):
+        self.step_ += 1
+        MAX_L = 10**10
+
+        # if l > MAX_L: assert False, "please lower learning rate"
+        if self.new_l_mean is None: self.new_l_mean = l
+        else: self.new_l_mean = self.beta * self.new_l_mean + (1-self.beta) * l
+        if self.l_mean is not None:
+            # if l > self.l_mean:
+            #     self.n_higher += 1
+            self.n_higher = l - self.l_mean
+        else:
+            self.l0 += l
+        
+        if self.step_ % self.patience != 0:
+            return False # data collection period
+
+        # if more than half time higher than previous mean, than diverges
+        #res = self.n_higher * 2 > self.patience
+        res = self.n_higher > 0
+        self.nhighers.append(self.n_higher)
+        self.ls.append(l)
+        
+        # reset
+        self.n_higher = 0
+        self.l_mean = copy.deepcopy(self.new_l_mean)
+        return res
+        
+    def set_lr_mul(self, increase=False):
+        for i, group in enumerate(self.opt.param_groups):
+            if i == 0: self.lrs.append(group['lr'])
+            if increase:
+                group['lr'] *= self.div ** (1/self.warm)
+            else:
+                group['lr'] = max(group['lr']  / self.div, 1e-10)
+                self.base_lrs[i] = group['lr']
+                self.warm *= 2
+        
+    def step(self, loss):
+        converge =  not self.diverge(loss)
+        self.set_lr_mul(increase=converge)
+        
 ######################### learning rate adjusting ########################
 class LR_schedule_fixed():
 
