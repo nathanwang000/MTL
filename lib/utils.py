@@ -4,6 +4,9 @@ import os
 import random, string, os
 import glob, copy
 
+def crossed_zero(old, new):
+    return (old * new <= 0).float()
+
 def random_string(N=5):
     return ''.join(random.choice(string.ascii_uppercase + string.digits)
                    for _ in range(N))
@@ -19,6 +22,32 @@ def to_cuda(x):
         x = [x_.cuda() for x_ in x]
     return x
 
+class CrossZeroTracker(object):
+    def __init__(self, optimizer):
+        self.opt = optimizer
+        self.beta1 = 0.9
+        self.n_grad_flip = 0 # number of momentum flip
+        self.momentum = {}
+        for group in self.opt.param_groups:
+            for p in group['params']:
+                self.momentum[p] = torch.zeros_like(p)
+                
+    def record(self):
+        for group in self.opt.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
+                
+                exp_avg = self.momentum[p]
+                self.n_grad_flip += torch.sum(crossed_zero(exp_avg,
+                                                           exp_avg*self.beta1\
+                                                           + (1-self.beta1)*grad)).item()
+                exp_avg.mul_(self.beta1).add_(1 - self.beta1, grad)
+        
 class OptRecorder(object):
     """collect items in optimizer"""
     def __init__(self, optimizer, n=10, model=None):
