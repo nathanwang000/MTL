@@ -21,7 +21,7 @@ parser.add_argument('-kappas', type=int, nargs='+', default=[4],
 parser.add_argument('-lambda_maxs', type=int, nargs='+', default=[4],
                     help='lambda max in log scale')
 parser.add_argument('-r', type=int, help='number of repeat', default=30)
-parser.add_argument('-angles', type=int, nargs='+', help='angles in degree',
+parser.add_argument('-angles', type=float, nargs='+', help='angles in degree',
                     default=np.linspace(0, 90, 10))
 args = parser.parse_args()
 print(args)
