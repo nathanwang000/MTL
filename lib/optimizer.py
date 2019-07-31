@@ -16,7 +16,170 @@ def reset_grad(optimizer): # not zero_grad as in optimizer default
             state = optimizer.state[p]
             state['grad'] = torch.zeros_like(p.data)
 
-class AdaSGD(Optimizer): # per dimension SGD
+class SGDbeta(Optimizer): 
+    def __init__(self, params, lr=required, momentum=0, dampening=0,
+                 weight_decay=0, nesterov=False, eps=1e-9, amsgrad=False):
+        if lr is not required and lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if momentum < 0.0:
+            raise ValueError("Invalid momentum value: {}".format(momentum))
+        if weight_decay < 0.0:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
+                        weight_decay=weight_decay, nesterov=nesterov,
+                        eps=eps, amsgrad=amsgrad)
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        super(SGDbeta, self).__init__(params, defaults)
+
+        self.step_ = 0        
+
+    def __setstate__(self, state):
+        super(AdaSGD, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+            group.setdefault('amsgrad', False)
+            
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+        self.step_ += 1
+        
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+            amsgrad = group['amsgrad']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                d_p = p.grad.data
+                if weight_decay != 0:
+                    d_p.add_(weight_decay, p.data)
+                if momentum != 0:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                    buf = param_state['momentum_buffer']
+                    buf.mul_(momentum).add_(1 - momentum, d_p)
+                    if nesterov:
+                        d_p = d_p.add(momentum, buf)
+                    else:
+                        d_p = buf
+
+                bias_correction = 1 - momentum ** self.step_
+                p.data.add_(-group['lr'], d_p / bias_correction)
+
+        return loss
+
+class SGDbetas(Optimizer): # per dimension SGD
+    def __init__(self, params, lr=required, momentum=0, dampening=0, betas=(0.9, 0.999),
+                 weight_decay=0, nesterov=False, eps=1e-9, amsgrad=False):
+        if lr is not required and lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if momentum < 0.0:
+            raise ValueError("Invalid momentum value: {}".format(momentum))
+        if weight_decay < 0.0:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
+                        weight_decay=weight_decay, nesterov=nesterov,
+                        betas=betas, eps=eps, amsgrad=amsgrad)
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        super(SGDbetas, self).__init__(params, defaults)
+
+        self.w_sq = 0 # weight squared divided by d
+        self.max_w_sq = 0
+        self.step_ = 0
+        self.betas = betas
+
+    def __setstate__(self, state):
+        super(AdaSGD, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+            group.setdefault('amsgrad', False)
+            
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        # calculate norm of the vector
+        beta1, beta2 = self.betas
+        w_sq = 0
+        d = 0
+        self.step_ += 1
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                if weight_decay != 0:
+                    grad += weight_decay * p.data
+                w_sq += (grad**2).sum()
+                d += grad.numel()
+                
+        self.w_sq = self.w_sq * beta2 + (1-beta2) * (w_sq / d)
+
+        # actual update
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+            amsgrad = group['amsgrad']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                d_p = p.grad.data
+                if weight_decay != 0:
+                    d_p.add_(weight_decay, p.data)
+                # if momentum != 0:
+                #     param_state = self.state[p]
+                #     if 'momentum_buffer' not in param_state:
+                #         buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                #         buf.mul_(momentum).add_(d_p)
+                #     else:
+                #         buf = param_state['momentum_buffer']
+                #         buf.mul_(momentum).add_(1 - dampening, d_p)
+                #     if nesterov:
+                #         d_p = d_p.add(momentum, buf)
+                #     else:
+                #         d_p = buf
+
+                state = self.state[p]
+                if 'momentum_buffer' not in state:
+                    state['momentum_buffer'] = torch.zeros_like(p.data)
+                m = state['momentum_buffer']
+                m.mul_(beta1).add_(1-beta1, d_p)
+                
+                bias_correction1 = 1 - beta1 ** self.step_
+                bias_correction2 = 1 - beta2 ** self.step_
+                if amsgrad:
+                    if type(self.max_w_sq) is int:
+                        self.max_w_sq = copy.deepcopy(self.w_sq)
+                    else:
+                        self.max_w_sq = torch.max(self.max_w_sq, self.w_sq)
+                    denom = self.max_w_sq.sqrt() + group['eps']
+                else:
+                    denom = self.w_sq.sqrt() + group['eps']
+
+                p.data.addcdiv_(-group['lr'], d_p, denom * bias_correction1 / math.sqrt(bias_correction2))
+                #p.data.add_(-group['lr'], d_p) # old                
+
+        return loss
+    
+class AdaSGD(Optimizer): 
     def __init__(self, params, lr=required, momentum=0, dampening=0,
                  weight_decay=0, nesterov=False, beta=0.999, eps=1e-9, amsgrad=False):
         if lr is not required and lr < 0.0:
@@ -110,6 +273,207 @@ class AdaSGD(Optimizer): # per dimension SGD
                 #p.data.add_(-group['lr'], d_p) # old                
 
         return loss
+
+class AdamW(Optimizer):
+    """Implements Adam algorithm.
+    It has been proposed in `Adam: A Method for Stochastic Optimization`_.
+    Arguments:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+        lr (float, optional): learning rate (default: 1e-3)
+        betas (Tuple[float, float], optional): coefficients used for computing
+            running averages of gradient and its square (default: (0.9, 0.999))
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-8)
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        amsgrad (boolean, optional): whether to use the AMSGrad variant of this
+            algorithm from the paper `On the Convergence of Adam and Beyond`_
+    .. _Adam\: A Method for Stochastic Optimization:
+        https://arxiv.org/abs/1412.6980
+    .. _On the Convergence of Adam and Beyond:
+        https://openreview.net/forum?id=ryQu7f-RZ
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0, amsgrad=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps,
+                        weight_decay=weight_decay, amsgrad=amsgrad)
+        super(AdamW, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(AdamW, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsgrad', False)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                if grad.is_sparse:
+                    raise RuntimeError('Adam does not support sparse gradients, please consider SparseAdam instead')
+                amsgrad = group['amsgrad']
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    if amsgrad:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsgrad:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # if group['weight_decay'] != 0:
+                #     grad = grad.add(group['weight_decay'], p.data)
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsgrad:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # p.data.addcdiv_(-step_size, exp_avg, denom)
+                p.data.add_(-step_size,  torch.mul(p.data, group['weight_decay']).addcdiv_(1, exp_avg, denom) )
+
+        return loss
+    
+class MaxSGD(Optimizer): # per dimension SGD
+    def __init__(self, params, lr=required, momentum=0, dampening=0,
+                 weight_decay=0, nesterov=False, beta=0.999, eps=1e-9, amsgrad=False):
+        if lr is not required and lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if momentum < 0.0:
+            raise ValueError("Invalid momentum value: {}".format(momentum))
+        if weight_decay < 0.0:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
+                        weight_decay=weight_decay, nesterov=nesterov,
+                        beta=beta, eps=eps, amsgrad=amsgrad)
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        super(MaxSGD, self).__init__(params, defaults)
+
+        self.w_sq = 0 # weight squared divided by d
+        self.max_w_sq = 0
+        self.beta = beta
+        self.step_ = 0        
+
+    def __setstate__(self, state):
+        super(MaxSGD, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+            group.setdefault('amsgrad', False)
+            
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        # calculate norm of the vector
+        w_sq = 0
+        d = 0
+        self.step_ += 1
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                if weight_decay != 0:
+                    grad += weight_decay * p.data
+
+                if w_sq is 0:
+                    w_sq = torch.max(grad**2)
+                else:
+                    w_sq = torch.max(w_sq, torch.max(grad**2))
+                d += grad.numel()
+                
+        self.w_sq = self.w_sq * self.beta + (1-self.beta) * w_sq
+
+        # actual update
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+            amsgrad = group['amsgrad']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                d_p = p.grad.data
+                if weight_decay != 0:
+                    d_p.add_(weight_decay, p.data)
+                if momentum != 0:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                        buf.mul_(momentum).add_(d_p)
+                    else:
+                        buf = param_state['momentum_buffer']
+                        buf.mul_(momentum).add_(1 - dampening, d_p)
+                    if nesterov:
+                        d_p = d_p.add(momentum, buf)
+                    else:
+                        d_p = buf
+
+                bias_correction = 1 - self.beta ** self.step_
+                if amsgrad:
+                    if type(self.max_w_sq) is int:
+                        self.max_w_sq = copy.deepcopy(self.w_sq)
+                    else:
+                        self.max_w_sq = torch.max(self.max_w_sq, self.w_sq)
+                    denom = self.max_w_sq.sqrt() + group['eps']
+                else:
+                    denom = self.w_sq.sqrt() + group['eps']
+
+                denom /= math.sqrt(bias_correction)
+                p.data.addcdiv_(-group['lr'], d_p, denom)
+                #p.data.add_(-group['lr'], d_p) # old                
+
+        return loss
+    
             
 class dSGD(Optimizer): # per dimension SGD
     def __init__(self, params, lr=required, momentum=0, dampening=0,

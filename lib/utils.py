@@ -56,7 +56,8 @@ class OptPath():
         self.tol = tol
         
     def get_path(self, criteria, x0, lr=1e-3, opt=torch.optim.SGD, sgd_adjust=False,
-                 schedule=None, decay_rate=0.1, crosszero=False, record=False, **kwargs):
+                 schedule=None, decay_rate=0.1, crosszero=False, record=False,
+                 bs=10, **kwargs):
         self.lr = lr
         self.kwargs = kwargs
         self.schedule = schedule
@@ -85,7 +86,7 @@ class OptPath():
             
         for i in range(self.max_iter):
             optimizer.zero_grad()
-            l = criteria(x)
+            l = criteria(x, bs=bs)
             l.backward()
             if sgd_adjust: self.sgd_adjuster.step(l.data.item())
             optimizer.step()
@@ -127,8 +128,8 @@ class OptPath():
                 return len(self.x_path) - i
         return 0
 
-    def get_loss(self):
-        return [self.criteria(torch.from_numpy(x).view(1, -1).float()).item() for
+    def get_loss(self, bs=10):
+        return [self.criteria(torch.from_numpy(x).view(1, -1).float(), bs=bs).item() for
                 x in self.x_path]
 
 def gen_quadratic_loss(d=10, lambda_min=1, lambda_max=1, logscale=False, Q=None):
@@ -141,10 +142,49 @@ def gen_quadratic_loss(d=10, lambda_min=1, lambda_max=1, logscale=False, Q=None)
         Lambda = np.logspace(np.log10(lambda_min), np.log10(lambda_max), d)
     A = torch.from_numpy(Q.T.dot(np.diag(Lambda)).dot(Q)).float()
     # x is n by d
-    def res(x):
+    def res(x, bs=10):
         return 0.5 * (x.mm(A) * x).sum(1)
     
     return res, Q, Lambda
+
+def gen_quadratic_data(n, d=2, lambda_min=1, lambda_max=1,
+                       logscale=False, theta_star=None, Q=None, offset=0):
+    assert n > d, "n > d otherwise ill condition for this illustrative plot"
+    if Q is None:
+        Q = ortho_group.rvs(d)
+    U = ortho_group.rvs(n)
+    if not logscale:
+        Lambda = np.linspace(lambda_min, lambda_max, d)
+    else:
+        Lambda = np.logspace(np.log10(lambda_min), np.log10(lambda_max), d)
+    Sigma = np.sqrt(Lambda)
+    X = U[:, :d].dot(np.diag(Sigma)).dot(Q)
+
+    if theta_star is not None:
+        y = X.dot(theta_star) + offset
+    else:
+        y = 30 * np.random.randn(n).reshape((n, 1))
+        
+    return Q, Lambda, X, y
+
+def gen_criteria(X, y):
+    D = torch.from_numpy(X).float()
+    target = torch.from_numpy(y).float()
+
+    def res(x, bs=10): # x is axd
+        # random choose bs points
+        order = np.random.choice(len(D), size=(bs), replace=False)
+        error = D[order].mm(x.transpose(0,1)) - target[order] # n by a
+        ret = 0.5 * (error * error).sum(0) / bs
+        return ret
+
+    try:
+        theta_star = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)
+    except:
+        theta_star = np.linalg.lstsq(X, y)
+        print('not invertible', theta_star)
+        
+    return res, theta_star
 
 class OptRecorder(object):
     """collect items in optimizer"""
