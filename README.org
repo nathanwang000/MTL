@@ -1,22 +1,5 @@
-This is a project to understand adaptive methods for optimization using
-curvature estimates.  The project writeup page is [[https://www.overleaf.com/project/5c5c9ed49329822722a19168][here]]. We first try to
-understand the behavior of deep learning optimization techniques on convex
-settings following this [[http://akyrillidis.github.io/notes/AdaGrad][blog post]]. Later, we reproduce experiments in (marginal
-value paper) and (on the convergence of Adam and beyond).
+This project compares SGD to Adam and proposes a new algorithm called AdaSGD.
+Synthetic experiments are locadted in synthetic exp. The most up to date result
+is on mld5 server
 
-* synthetic datasets
-
-The synthetic dataset aims to explore algorithms' robustness to condition numbers.
-
-We consider logistic regression and linear regression to cover both the strongly
-convex and convex case. 
-
-#+BEGIN_SRC bash
-python opt_synthetic_exp.py
-#+END_SRC
-
-or to batch run all other experiments
-#+BEGIN_SRC bash
-bash lr_search.sh
-#+END_SRC
 
