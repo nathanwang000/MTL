@@ -167,6 +167,32 @@ def gen_quadratic_data(n, d=2, lambda_min=1, lambda_max=1,
         
     return Q, Lambda, X, y
 
+def gen_OLS_data(n, d=2, lambda_min=1, lambda_max=1, d_pad_zeros=0,
+                 logscale=False, theta_star=None, Q=None, U=None, noise=0):
+    # assert n > d, "n > d otherwise ill condition for this illustrative plot"
+    if Q is None:
+        Q = ortho_group.rvs(d + d_pad_zeros)
+    if U is None:
+        U = ortho_group.rvs(n)
+        
+    if not logscale:
+        Lambda = np.linspace(lambda_min, lambda_max, d)
+    else:
+        Lambda = np.logspace(np.log10(lambda_min), np.log10(lambda_max), d)
+
+    if d_pad_zeros > 0:
+        Lambda = np.array([l for l in Lambda] + [0]*d_pad_zeros)
+    Sigma = np.sqrt(Lambda)
+    X = U[:, :(d+d_pad_zeros)].dot(np.diag(Sigma)).dot(Q[:(d+d_pad_zeros),
+                                                         :(d+d_pad_zeros)])
+
+    if theta_star is not None:
+        y = (X.dot(theta_star) + noise * np.random.randn(len(X))).reshape((n, 1))
+    else:
+        y = 30 * np.random.randn(n).reshape((n, 1))
+        
+    return Q, U, Lambda, X, y
+
 def gen_criteria(X, y):
     D = torch.from_numpy(X).float()
     target = torch.from_numpy(y).float()
