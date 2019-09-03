@@ -1,5 +1,23 @@
 This project compares SGD to Adam and proposes a new algorithm called AdaSGD.
-Synthetic experiments are locadted in synthetic exp. The most up to date result
-is on mld5 server
+The results are scatter around mld4 and mld5. Use code on mld5 as the official
+code.
+
+synthetic data:
+mld5:/data1/jiaxuan/2019/Optimizer/synthetic_exp
+mld5:/data1/jiaxuan/2019/Optimizer/PaperFigures.ipynb
+
+cifar10 data:
+mld5:/data1/jiaxuan/2019/AdaBound/demos/cifar10
+mld5:/data1/jiaxuan/2019/AdaBound/demos/cifar10/visualization.ipynb
+
+wiki2 data:
+mld4:/data2/jiaxuan/2019/pytorch_tutorial_fork/tutorials/02-intermediate/language_model_wiki/result_transition/
+mld4:/data2/jiaxuan/2019/pytorch_tutorial_fork/tutorials/02-intermediate/language_model_wiki/result_decay/
+mld4:/data2/jiaxuan/2019/Optimizer/Figures.ipynb
+
+mimic3 data:
+mld4:/data2/jiaxuan/2019/MTL_RNN/mimic3/IHM/result
+mld4:/data2/jiaxuan/2019/Optimizer/Figures.ipynb
+
 
 
