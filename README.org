@@ -12,7 +12,11 @@ mld5:/data1/jiaxuan/2019/AdaBound/demos/cifar10/visualization.ipynb
 
 wiki2 data:
 mld4:/data2/jiaxuan/2019/pytorch_tutorial_fork/tutorials/02-intermediate/language_model_wiki/result_transition/
+newer result with part of seed 3
 mld4:/data2/jiaxuan/2019/pytorch_tutorial_fork/tutorials/02-intermediate/language_model_wiki/result_decay/
+result with seed 0, 42
+mld4:/data5/jiaxuan/wiki2_results/result_decay
+visualization
 mld4:/data2/jiaxuan/2019/Optimizer/Figures.ipynb
 
 mimic3 data:
